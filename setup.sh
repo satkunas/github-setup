@@ -319,9 +319,9 @@ generate_gpg_key() {
         local timeout_duration=300  # 5 minutes timeout
 
         # Use appropriate flags for GPG version
-        local gpg_flags="$cmd --batch $HOME/.gnupg/conf"
+        local gpg_flags="$cmd --batch"
 
-        if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1; then
+        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf" >/dev/null 2>&1; then
             success=true
             break
         else
