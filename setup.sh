@@ -42,6 +42,41 @@ if [ -f /usr/bin/yum ]; then
     git
 fi
 
+# Function to check available entropy
+check_entropy() {
+    if [[ -r /proc/sys/kernel/random/entropy_avail ]]; then
+        cat /proc/sys/kernel/random/entropy_avail
+    else
+        echo "1000"  # assume sufficient entropy if can't check
+    fi
+}
+
+# Function to improve entropy for older GPG versions
+improve_entropy_for_old_gpg() {
+    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local major=$(echo $version | cut -d. -f1)
+    local minor=$(echo $version | cut -d. -f2)
+
+    # Only improve entropy for older GPG versions that use --gen-key
+    if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
+        local entropy=$(check_entropy)
+        if [[ $entropy -lt 200 ]]; then
+            echo "Low entropy ($entropy) detected for older GPG version. Installing rng-tools..."
+
+            if command -v apt-get >/dev/null; then
+                apt-get update -qq && apt-get install -y rng-tools >/dev/null 2>&1
+                rngd -r /dev/urandom >/dev/null 2>&1 &
+            elif command -v yum >/dev/null; then
+                yum install -y rng-tools >/dev/null 2>&1
+                rngd -r /dev/urandom >/dev/null 2>&1 &
+            fi
+
+            # Wait a moment for entropy to improve
+            sleep 2
+        fi
+    fi
+}
+
 # Function to get GPG version and determine appropriate command
 get_gpg_command() {
     local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
@@ -96,6 +131,9 @@ cat >~/.gnupg/conf <<EOF
 EOF
 # Generate GPG key with version-appropriate command and fallback
 generate_gpg_key() {
+    # Improve entropy before generation if using older GPG version
+    improve_entropy_for_old_gpg
+
     local commands=("$(get_gpg_command)" "--full-generate-key" "--full-gen-key" "--gen-key")
 
     for cmd in "${commands[@]}"; do
