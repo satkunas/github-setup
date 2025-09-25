@@ -125,12 +125,38 @@ fi
 source ~/.bashrc
 
 eval "$(ssh-agent -s)"
-if [[ ! -f ~/.ssh/id_ed25519 ]]; then
-  ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519
-  ssh-add ~/.ssh/id_ed25519
+
+# Try ED25519 first, fall back to RSA if not supported
+KEY_FILE=""
+if [[ ! -f ~/.ssh/id_ed25519_github ]]; then
+  if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github 2>/dev/null; then
+    KEY_FILE="~/.ssh/id_ed25519_github"
+    ssh-add ~/.ssh/id_ed25519_github
+  elif [[ ! -f ~/.ssh/id_rsa_github ]]; then
+    echo "ED25519 not supported, falling back to RSA"
+    ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github
+    KEY_FILE="~/.ssh/id_rsa_github"
+    ssh-add ~/.ssh/id_rsa_github
+  fi
+elif [[ ! -f ~/.ssh/id_rsa_github ]]; then
+  KEY_FILE="~/.ssh/id_ed25519_github"
+  ssh-add ~/.ssh/id_ed25519_github
+else
+  KEY_FILE="~/.ssh/id_rsa_github"
+  ssh-add ~/.ssh/id_rsa_github
 fi
 
-SSH_PUBLICKEY=$(cat ~/.ssh/id_ed25519.pub)
+# Determine which key to use for GitHub
+if [[ -f ~/.ssh/id_ed25519_github.pub ]]; then
+  SSH_PUBLICKEY=$(cat ~/.ssh/id_ed25519_github.pub)
+  SSH_KEY_TYPE="ED25519"
+elif [[ -f ~/.ssh/id_rsa_github.pub ]]; then
+  SSH_PUBLICKEY=$(cat ~/.ssh/id_rsa_github.pub)
+  SSH_KEY_TYPE="RSA"
+else
+  echo "No SSH key found!"
+  exit 1
+fi
 
 curl -L \
   -X POST \
