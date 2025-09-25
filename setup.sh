@@ -60,6 +60,20 @@ check_entropy() {
     fi
 }
 
+# Function to get appropriate entropy threshold based on kernel version
+get_entropy_threshold() {
+    local kernel_version=$(uname -r | cut -d. -f1-2)
+    local major=$(echo $kernel_version | cut -d. -f1)
+    local minor=$(echo $kernel_version | cut -d. -f2)
+
+    # Modern kernels (5.10+) have smaller entropy pools (256 bits max)
+    if [[ $major -gt 5 ]] || [[ $major -eq 5 && $minor -ge 10 ]]; then
+        echo "200"  # Use 200 as threshold for modern kernels
+    else
+        echo "1000"  # Use 1000 for older kernels with larger pools
+    fi
+}
+
 # Function to improve entropy for older GPG versions
 improve_entropy_for_old_gpg() {
     local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
@@ -69,7 +83,8 @@ improve_entropy_for_old_gpg() {
     # Only improve entropy for older GPG versions that use --gen-key
     if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
         local entropy=$(check_entropy)
-        if [[ $entropy -lt 1000 ]]; then
+        local threshold=$(get_entropy_threshold)
+        if [[ $entropy -lt $threshold ]]; then
             echo "Low entropy ($entropy) detected for older GPG version. Improving entropy..."
 
             # Try multiple entropy improvement methods
@@ -111,9 +126,9 @@ improve_entropy_for_old_gpg() {
 
             while true; do
                 local current_entropy=$(check_entropy)
-                echo "Current entropy: $current_entropy (waiting for >1000)"
+                echo "Current entropy: $current_entropy/$threshold"
 
-                if [[ $current_entropy -gt 1000 ]]; then
+                if [[ $current_entropy -gt $threshold ]]; then
                     echo "Sufficient entropy achieved: $current_entropy"
                     break
                 fi
