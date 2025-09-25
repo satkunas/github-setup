@@ -214,11 +214,8 @@ EOF
 
     # Handle passphrase configuration based on GPG version
     if [[ $major -eq 1 ]]; then
-        # GPG 1.4.x - doesn't support %no-ask-passphrase or %no-protection
-        # Use empty passphrase instead
-        cat >>~/.gnupg/conf <<EOF
-Passphrase:
-EOF
+        # GPG 1.4.x - omit passphrase entirely, will use empty passphrase by default
+        # Don't add any passphrase line
     elif [[ $major -eq 2 && $minor -eq 0 ]]; then
         # GPG 2.0.x - supports %no-ask-passphrase
         cat >>~/.gnupg/conf <<EOF
@@ -333,16 +330,27 @@ generate_gpg_key() {
 
     # Version-specific command execution
     if [[ $major -eq 1 ]]; then
-        # GPG 1.4.x - NO --batch support, use --no-use-agent --no-tty
-        local gpg_flags="--no-use-agent --no-tty --gen-key"
-        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+        # GPG 1.4.x - NO --batch support, try basic --gen-key first
+        local gpg_flags="--gen-key"
+        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf"; then
             success=true
         else
-            local exit_code=$?
-            if [[ $exit_code -eq 124 ]]; then
-                # For timeout, try regenerating entropy before next attempt
-                generate_entropy
-                sleep 3
+            echo "DEBUG: First GPG command failed, trying with --no-tty"
+            # If that fails, try with --no-tty
+            gpg_flags="--no-tty --gen-key"
+            if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf"; then
+                success=true
+            else
+                local exit_code=$?
+                echo "DEBUG: GPG 1.4.12 failed with exit code $exit_code"
+                echo "DEBUG: Command was: gpg $gpg_flags $HOME/.gnupg/conf"
+                echo "DEBUG: Batch file contents:"
+                cat "$HOME/.gnupg/conf"
+                if [[ $exit_code -eq 124 ]]; then
+                    # For timeout, try regenerating entropy before next attempt
+                    generate_entropy
+                    sleep 3
+                fi
             fi
         fi
     elif [[ $major -eq 2 && $minor -eq 0 ]]; then
