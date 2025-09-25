@@ -124,8 +124,8 @@ get_existing_gpg_key() {
 
 # Detect existing SSH key
 get_existing_ssh_key() {
-    # Check for common SSH key files
-    local key_files=("~/.ssh/id_ed25519.pub" "~/.ssh/id_rsa.pub" "~/.ssh/id_ed25519_github.pub" "~/.ssh/id_rsa_github.pub")
+    # Check for common SSH key files (in order of security preference)
+    local key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_ecdsa_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_ecdsa.pub" "~/.ssh/id_rsa.pub")
 
     for key_file in "${key_files[@]}"; do
         local expanded_path=$(eval echo $key_file)
@@ -543,12 +543,26 @@ if [[ $GENERATE_SSH == true ]]; then
             echo "ERROR: SSH key generation failed"
         fi
     else
-        # OpenSSH < 6.5 - use RSA only with smaller key size for compatibility
-        if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
-            ssh-add ~/.ssh/id_rsa_github
-            echo "RSA 2048 key generated (legacy mode)"
+        # OpenSSH < 6.5 - prefer ECDSA over RSA for better security
+        if [[ $ssh_major -gt 5 ]] || [[ $ssh_major -eq 5 && $ssh_minor -ge 7 ]]; then
+            # OpenSSH 5.7+ supports ECDSA - more secure than RSA
+            if ssh-keygen -t ecdsa -b 256 -C "$GIT_EMAIL" -f ~/.ssh/id_ecdsa_github -N ""; then
+                ssh-add ~/.ssh/id_ecdsa_github
+                echo "ECDSA P-256 key generated (legacy mode)"
+            elif ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
+                ssh-add ~/.ssh/id_rsa_github
+                echo "RSA 2048 key generated (fallback)"
+            else
+                echo "ERROR: SSH key generation failed"
+            fi
         else
-            echo "ERROR: SSH key generation failed"
+            # Very old OpenSSH < 5.7 - RSA only
+            if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
+                ssh-add ~/.ssh/id_rsa_github
+                echo "RSA 2048 key generated (very legacy mode)"
+            else
+                echo "ERROR: SSH key generation failed"
+            fi
         fi
     fi
 fi
@@ -558,7 +572,7 @@ if [[ $UPLOAD_SSH == true ]]; then
     echo "Uploading SSH key to GitHub..."
 
     # Find SSH public key (check same files as detection function)
-    key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_rsa.pub")
+    key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_ecdsa_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_ecdsa.pub" "~/.ssh/id_rsa.pub")
     SSH_PUBLICKEY=""
 
     for key_file in "${key_files[@]}"; do
@@ -627,12 +641,15 @@ if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
 Host *
         AddKeysToAgent yes
         IdentityFile ~/.ssh/id_ed25519_github
+        IdentityFile ~/.ssh/id_ecdsa_github
         IdentityFile ~/.ssh/id_rsa_github
 
 Host github.com
         Hostname ssh.github.com
         Port 443
         User git
+        UpdateHostKeys yes
+        PubkeyAcceptedAlgorithms +rsa-sha2-512,rsa-sha2-256
 EOF
           echo "SSH config updated for GitHub (using Include)"
         else
@@ -651,7 +668,9 @@ Host github.com
         Hostname ssh.github.com
         Port 443
         User git
+        IdentityFile ~/.ssh/id_ecdsa_github
         IdentityFile ~/.ssh/id_rsa_github
+        UpdateHostKeys yes
 EOF
           else
             # OpenSSH 6.7+ but < 7.3 - can use AddKeysToAgent
@@ -661,12 +680,15 @@ EOF
 Host *
         AddKeysToAgent yes
         IdentityFile ~/.ssh/id_ed25519_github
+        IdentityFile ~/.ssh/id_ecdsa_github
         IdentityFile ~/.ssh/id_rsa_github
 
 Host github.com
         Hostname ssh.github.com
         Port 443
         User git
+        UpdateHostKeys yes
+        PubkeyAcceptedAlgorithms +rsa-sha2-512,rsa-sha2-256
 EOF
           fi
           echo "SSH config updated for GitHub (legacy mode)"
