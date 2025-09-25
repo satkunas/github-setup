@@ -281,13 +281,13 @@ prepare_gpg_environment() {
     local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
     local major=$(echo $version | cut -d. -f1)
 
-    # Only create gpg.conf for very old versions that need it
-    if [[ $major -eq 1 ]]; then
-        cat > ~/.gnupg/gpg.conf <<EOF
-# Minimal GPG 1.x configuration
-cert-digest-algo SHA256
-EOF
-    fi
+    # Skip gpg.conf creation for GPG 1.x - not needed and can cause issues
+    # if [[ $major -eq 1 ]]; then
+    #     cat > ~/.gnupg/gpg.conf <<EOF
+    # # Minimal GPG 1.x configuration
+    # cert-digest-algo SHA256
+    # EOF
+    # fi
 }
 
 # Generate GPG key with version-appropriate command and fallback
@@ -318,8 +318,8 @@ generate_gpg_key() {
         # Use reasonable timeout for GPG generation
         local timeout_duration=300  # 5 minutes timeout
 
-        # Use debug flag for faster key generation
-        local gpg_flags="--debug-quick-random $cmd --batch ~/.gnupg/conf"
+        # Use appropriate flags for GPG version
+        local gpg_flags="$cmd --batch $HOME/.gnupg/conf"
 
         if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1; then
             success=true
