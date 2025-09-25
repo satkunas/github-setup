@@ -215,7 +215,8 @@ EOF
     # Handle passphrase configuration based on GPG version
     if [[ $major -eq 1 ]]; then
         # GPG 1.4.x - omit passphrase entirely, will use empty passphrase by default
-        # Don't add any passphrase line
+        # Don't add any passphrase line - just a no-op
+        true
     elif [[ $major -eq 2 && $minor -eq 0 ]]; then
         # GPG 2.0.x - supports %no-ask-passphrase
         cat >>~/.gnupg/conf <<EOF
