@@ -213,14 +213,20 @@ Expire-Date: 0
 EOF
 
     # Handle passphrase configuration based on GPG version
-    if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
-        # For older GPG versions (1.x and 2.0.x), use %no-ask-passphrase
+    if [[ $major -eq 1 ]]; then
+        # GPG 1.4.x - doesn't support %no-ask-passphrase or %no-protection
+        # Use empty passphrase instead
+        cat >>~/.gnupg/conf <<EOF
+Passphrase:
+EOF
+    elif [[ $major -eq 2 && $minor -eq 0 ]]; then
+        # GPG 2.0.x - supports %no-ask-passphrase
         cat >>~/.gnupg/conf <<EOF
 %no-ask-passphrase
 %no-protection
 EOF
     else
-        # For newer GPG versions, use empty passphrase
+        # For GPG 2.1.x+, use empty passphrase
         cat >>~/.gnupg/conf <<EOF
 Passphrase:
 EOF
@@ -306,34 +312,67 @@ generate_gpg_key() {
     fi
 
 
-    local commands=("$(get_gpg_command)" "--full-generate-key" "--full-gen-key" "--gen-key")
+    # Detect GPG version for proper command selection
+    local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
+    local major=$(echo $version | cut -d. -f1)
+    local minor=$(echo $version | cut -d. -f2)
+
+    # Handle empty or invalid version numbers
+    if [[ -z "$major" ]] || [[ "$major" == "gpg" ]]; then
+        major=1
+        minor=4
+    fi
+
     local success=false
 
-    for cmd in "${commands[@]}"; do
+    # Set environment variables for low entropy systems
+    export GNUPGHOME=~/.gnupg
 
+    # Use reasonable timeout for GPG generation
+    local timeout_duration=300  # 5 minutes timeout
 
-        # Set environment variables for low entropy systems
-        export GNUPGHOME=~/.gnupg
-
-        # Use reasonable timeout for GPG generation
-        local timeout_duration=300  # 5 minutes timeout
-
-        # Use appropriate flags for GPG version
-        local gpg_flags="$cmd --batch"
-
-        if timeout $timeout_duration gpg $gpg_flags < "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+    # Version-specific command execution
+    if [[ $major -eq 1 ]]; then
+        # GPG 1.4.x - NO --batch support, use --no-use-agent --no-tty
+        local gpg_flags="--no-use-agent --no-tty --gen-key"
+        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf" >/dev/null 2>&1; then
             success=true
-            break
         else
             local exit_code=$?
-
             if [[ $exit_code -eq 124 ]]; then
                 # For timeout, try regenerating entropy before next attempt
                 generate_entropy
                 sleep 3
             fi
         fi
-    done
+    elif [[ $major -eq 2 && $minor -eq 0 ]]; then
+        # GPG 2.0.x - supports --batch, requires pubring/secring
+        local gpg_flags="--batch --gen-key"
+        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+            success=true
+        else
+            local exit_code=$?
+            if [[ $exit_code -eq 124 ]]; then
+                generate_entropy
+                sleep 3
+            fi
+        fi
+    else
+        # GPG 2.1.x+ - try multiple commands in order of preference
+        local commands=("--batch --full-generate-key" "--batch --full-gen-key" "--batch --gen-key")
+        for cmd in "${commands[@]}"; do
+            if timeout $timeout_duration gpg $cmd "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+                success=true
+                break
+            else
+                local exit_code=$?
+                if [[ $exit_code -eq 124 ]]; then
+                    generate_entropy
+                    sleep 3
+                fi
+            fi
+        done
+    fi
 
 
     if [[ "$success" != "true" ]]; then
