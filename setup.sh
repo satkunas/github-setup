@@ -27,20 +27,9 @@ read -e -p "GIT name: " -i $GIT_NAME GIT_NAME
 # write:gpg_key
 read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN GIT_TOKEN
 
-# debian w/ apt
-if [ -f /etc/debian_version ]; then
-  sudo apt-get update
-  sudo apt-get install -y \
-    gpg \
-    git
-fi
-
-# rhel w/ yum
-if [ -f /usr/bin/yum ]; then
-  yum install -y \
-    gpg \
-    git
-fi
+# Install required packages
+install_package "gpg"
+install_package "git"
 
 # Function to check available entropy
 check_entropy() {
