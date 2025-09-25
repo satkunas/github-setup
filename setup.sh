@@ -29,8 +29,8 @@ read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN GIT_TOKEN
 
 # debian w/ apt
 if [ -f /etc/debian_version ]; then
-  apt-get update
-  apt-get install -y \
+  sudo apt-get update
+  sudo apt-get install -y \
     gpg \
     git
 fi
@@ -41,6 +41,34 @@ if [ -f /usr/bin/yum ]; then
     gpg \
     git
 fi
+
+# Function to get GPG version and determine appropriate command
+get_gpg_command() {
+    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local major=$(echo $version | cut -d. -f1)
+    local minor=$(echo $version | cut -d. -f2)
+    local patch=$(echo $version | cut -d. -f3)
+
+    # Version comparison logic
+    if [[ $major -lt 2 ]]; then
+        # GPG 1.x
+        echo "--gen-key"
+    elif [[ $major -eq 2 && $minor -eq 0 ]]; then
+        # GPG 2.0.x
+        echo "--gen-key"
+    elif [[ $major -eq 2 && $minor -eq 1 ]]; then
+        if [[ ${patch:-0} -lt 17 ]]; then
+            # GPG 2.1.0 - 2.1.16
+            echo "--full-gen-key"
+        else
+            # GPG 2.1.17+
+            echo "--full-generate-key"
+        fi
+    else
+        # GPG 2.2+ (assume supports --full-generate-key)
+        echo "--full-generate-key"
+    fi
+}
 
 gpg --list-keys
 cd ~/.gnupg/
@@ -66,7 +94,25 @@ cat >~/.gnupg/conf <<EOF
     %commit
     %echo GPG done
 EOF
-gpg --verbose --generate-key --batch ~/.gnupg/conf
+# Generate GPG key with version-appropriate command and fallback
+generate_gpg_key() {
+    local commands=("$(get_gpg_command)" "--full-generate-key" "--full-gen-key" "--gen-key")
+
+    for cmd in "${commands[@]}"; do
+        echo "Trying GPG command: $cmd"
+        if gpg --verbose $cmd --batch ~/.gnupg/conf 2>/dev/null; then
+            echo "Successfully generated GPG key using: $cmd"
+            return 0
+        else
+            echo "Command $cmd failed, trying next..."
+        fi
+    done
+
+    echo "ERROR: All GPG key generation commands failed"
+    exit 1
+}
+
+generate_gpg_key
 
 GPG_SIGNINGKEY=$(gpg --list-secret-keys --keyid-format=long| sed -En 's/sec\s+.*\/([0-9A-F]+)\s+.*/\1/p')
 GPG_PUBLICKEY=$(gpg --armor --export $GPG_SIGNINGKEY)
@@ -180,7 +226,8 @@ if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
 Host *
         AddKeysToAgent yes
         #UseKeychain yes
-        IdentityFile ~/.ssh/id_ed25519
+        IdentityFile ~/.ssh/id_ed25519_github
+        IdentityFile ~/.ssh/id_rsa_github
 
 Host github.com
         Hostname ssh.github.com
