@@ -69,19 +69,54 @@ improve_entropy_for_old_gpg() {
     # Only improve entropy for older GPG versions that use --gen-key
     if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
         local entropy=$(check_entropy)
-        if [[ $entropy -lt 200 ]]; then
-            echo "Low entropy ($entropy) detected for older GPG version. Installing rng-tools..."
+        if [[ $entropy -lt 1000 ]]; then
+            echo "Low entropy ($entropy) detected for older GPG version. Improving entropy..."
 
+            # Try multiple entropy improvement methods
             if command -v apt-get >/dev/null; then
-                sudo apt-get update -qq && sudo apt-get install -y rng-tools >/dev/null 2>&1
+                # Install haveged for better entropy generation
+                if ! dpkg -l | grep -q "^ii  haveged "; then
+                    echo "Installing haveged..."
+                    sudo apt-get update -qq && sudo apt-get install -y haveged >/dev/null 2>&1
+                    sudo service haveged start >/dev/null 2>&1
+                fi
+
+                # Also install rng-tools as backup
+                if ! dpkg -l | grep -q "^ii  rng-tools "; then
+                    echo "Installing rng-tools..."
+                    sudo apt-get install -y rng-tools >/dev/null 2>&1
+                fi
                 sudo rngd -r /dev/urandom >/dev/null 2>&1 &
             elif command -v yum >/dev/null; then
-                sudo yum install -y rng-tools >/dev/null 2>&1
+                if ! rpm -q haveged >/dev/null 2>&1; then
+                    echo "Installing haveged..."
+                    sudo yum install -y haveged >/dev/null 2>&1
+                    sudo service haveged start >/dev/null 2>&1
+                fi
+                if ! rpm -q rng-tools >/dev/null 2>&1; then
+                    echo "Installing rng-tools..."
+                    sudo yum install -y rng-tools >/dev/null 2>&1
+                fi
                 sudo rngd -r /dev/urandom >/dev/null 2>&1 &
             fi
 
-            # Wait a moment for entropy to improve
-            sleep 2
+            # Generate some entropy manually
+            echo "Generating additional entropy..."
+            dd if=/dev/urandom of=/dev/random count=1 bs=4096 >/dev/null 2>&1 &
+
+            # Wait longer for entropy to build up
+            local max_wait=30
+            local waited=0
+            while [[ $waited -lt $max_wait ]]; do
+                local current_entropy=$(check_entropy)
+                echo "Current entropy: $current_entropy (waiting for >1000)"
+                if [[ $current_entropy -gt 1000 ]]; then
+                    echo "Sufficient entropy achieved: $current_entropy"
+                    break
+                fi
+                sleep 2
+                waited=$((waited + 2))
+            done
         fi
     fi
 }
@@ -123,15 +158,22 @@ generate_gpg_config() {
     cat >~/.gnupg/conf <<EOF
 %echo GPG generating...
 Key-Type: RSA
-Key-Length: 4096
+Key-Length: 2048
 Subkey-Type: RSA
-Subkey-Length: 4096
+Subkey-Length: 2048
 Name-Real: $GIT_NAME
 Name-Comment: $GIT_NAME
 Name-Email: $GIT_EMAIL
 Expire-Date: 0
-%ask-passphrase
+Passphrase:
 EOF
+
+    # Add version-specific configuration for older GPG
+    if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
+        cat >>~/.gnupg/conf <<EOF
+%no-protection
+EOF
+    fi
 
     # Add version-specific keyring configuration
     if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
@@ -185,15 +227,24 @@ generate_gpg_key() {
 
     for cmd in "${commands[@]}"; do
         echo "Trying GPG command: $cmd"
-        if gpg --verbose $cmd --batch ~/.gnupg/conf 2>/dev/null; then
+
+        # Use timeout to prevent hanging
+        if timeout 300 gpg --verbose $cmd --batch ~/.gnupg/conf; then
             echo "Successfully generated GPG key using: $cmd"
             return 0
         else
-            echo "Command $cmd failed, trying next..."
+            local exit_code=$?
+            if [[ $exit_code -eq 124 ]]; then
+                echo "Command $cmd timed out after 5 minutes"
+            else
+                echo "Command $cmd failed with exit code $exit_code"
+            fi
+            echo "Trying next command..."
         fi
     done
 
     echo "ERROR: All GPG key generation commands failed"
+    echo "This might be due to insufficient entropy. Try running the script again or install additional entropy sources."
     exit 1
 }
 
