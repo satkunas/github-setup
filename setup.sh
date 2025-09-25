@@ -27,6 +27,26 @@ read -e -p "GIT name: " -i $GIT_NAME GIT_NAME
 # write:gpg_key
 read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN GIT_TOKEN
 
+# Function to install packages based on OS
+install_package() {
+    local package="$1"
+    if command -v apt-get >/dev/null; then
+        # Debian/Ubuntu
+        if ! dpkg -l | grep -q "^ii  $package "; then
+            echo "Installing $package..."
+            apt-get update -qq && apt-get install -y "$package"
+        fi
+    elif command -v yum >/dev/null; then
+        # RHEL/CentOS
+        if ! rpm -q "$package" >/dev/null 2>&1; then
+            echo "Installing $package..."
+            yum install -y "$package"
+        fi
+    else
+        echo "Warning: No supported package manager found. Please install $package manually."
+    fi
+}
+
 # Install required packages
 install_package "gpg"
 install_package "git"
@@ -94,30 +114,68 @@ get_gpg_command() {
     fi
 }
 
+# Function to generate GPG configuration based on version
+generate_gpg_config() {
+    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local major=$(echo $version | cut -d. -f1)
+    local minor=$(echo $version | cut -d. -f2)
+
+    cat >~/.gnupg/conf <<EOF
+%echo GPG generating...
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: $GIT_NAME
+Name-Comment: $GIT_NAME
+Name-Email: $GIT_EMAIL
+Expire-Date: 0
+%ask-passphrase
+EOF
+
+    # Add version-specific keyring configuration
+    if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
+        # GPG 1.x and 2.0.x use separate pub/sec rings
+        cat >>~/.gnupg/conf <<EOF
+%pubring pubring.gpg
+%secring secring.gpg
+EOF
+    else
+        # GPG 2.1+ uses keybox format, no secring
+        cat >>~/.gnupg/conf <<EOF
+%pubring pubring.kbx
+EOF
+    fi
+
+    cat >>~/.gnupg/conf <<EOF
+%commit
+%echo GPG done
+EOF
+}
+
+# Initialize GPG directory and trustdb
+initialize_gpg() {
+    mkdir -p ~/.gnupg
+    chmod 700 ~/.gnupg
+
+    # Remove corrupted trustdb if it exists
+    if [[ -f ~/.gnupg/trustdb.gpg ]]; then
+        echo "Removing existing trustdb..."
+        rm -f ~/.gnupg/trustdb.gpg
+    fi
+
+    # Initialize trustdb
+    gpg --check-trustdb 2>/dev/null || true
+}
+
 gpg --list-keys
+initialize_gpg
 cd ~/.gnupg/
 
 ###
 # https://www.gnupg.org/documentation/manuals/gnupg-devel/Unattended-GPG-key-generation.html
 ###
-cat >~/.gnupg/conf <<EOF
-    %echo GPG generating...
-    Key-Type: RSA
-    Key-Length: 4096
-    Subkey-Type: RSA
-    Subkey-Length: 4096
-    Name-Real: $GIT_NAME
-    Name-Comment: $GIT_NAME
-    Name-Email: $GIT_EMAIL
-    Expire-Date: 0
-  #%no-ask-passphrase
-  #%no-protection
-  %ask-passphrase
-    %pubring pubring.kbx
-    %secring trustdb.gpg
-    %commit
-    %echo GPG done
-EOF
+generate_gpg_config
 # Generate GPG key with version-appropriate command and fallback
 generate_gpg_key() {
     # Improve entropy before generation if using older GPG version
