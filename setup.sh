@@ -333,12 +333,33 @@ generate_gpg_key() {
     if [[ $major -eq 1 ]]; then
         # GPG 1.4.x - NO --batch support, try basic --gen-key first
         local gpg_flags="--gen-key"
-        if timeout $timeout_duration gpg $gpg_flags < "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+        # GPG 1.4.12 doesn't support batch files - use expect-style input
+        if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1 << EOF
+1
+2048
+0
+y
+$GIT_NAME
+$GIT_EMAIL
+
+
+EOF
+        then
             success=true
         else
             # If that fails, try with --no-tty
             gpg_flags="--no-tty --gen-key"
-            if timeout $timeout_duration gpg $gpg_flags < "$HOME/.gnupg/conf" >/dev/null 2>&1; then
+            if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1 << EOF
+1
+2048
+0
+y
+$GIT_NAME
+$GIT_EMAIL
+
+
+EOF
+            then
                 success=true
             else
                 local exit_code=$?
