@@ -333,20 +333,15 @@ generate_gpg_key() {
     if [[ $major -eq 1 ]]; then
         # GPG 1.4.x - NO --batch support, try basic --gen-key first
         local gpg_flags="--gen-key"
-        if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf"; then
+        if timeout $timeout_duration gpg $gpg_flags < "$HOME/.gnupg/conf" >/dev/null 2>&1; then
             success=true
         else
-            echo "DEBUG: First GPG command failed, trying with --no-tty"
             # If that fails, try with --no-tty
             gpg_flags="--no-tty --gen-key"
-            if timeout $timeout_duration gpg $gpg_flags "$HOME/.gnupg/conf"; then
+            if timeout $timeout_duration gpg $gpg_flags < "$HOME/.gnupg/conf" >/dev/null 2>&1; then
                 success=true
             else
                 local exit_code=$?
-                echo "DEBUG: GPG 1.4.12 failed with exit code $exit_code"
-                echo "DEBUG: Command was: gpg $gpg_flags $HOME/.gnupg/conf"
-                echo "DEBUG: Batch file contents:"
-                cat "$HOME/.gnupg/conf"
                 if [[ $exit_code -eq 124 ]]; then
                     # For timeout, try regenerating entropy before next attempt
                     generate_entropy
