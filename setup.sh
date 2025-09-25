@@ -3,7 +3,7 @@
 if [[ ! -f defaults ]]; then
   cp -p defaults.example defaults
 fi
-source defaults
+source $PWD/defaults
 
 GIT_DOTDIR=$PWD/.git
 HOSTNAME=$(hostname)
