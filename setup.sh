@@ -34,13 +34,13 @@ install_package() {
         # Debian/Ubuntu
         if ! dpkg -l | grep -q "^ii  $package "; then
             echo "Installing $package..."
-            apt-get update -qq && apt-get install -y "$package"
+            sudo apt-get update -qq && sudo apt-get install -y "$package"
         fi
     elif command -v yum >/dev/null; then
         # RHEL/CentOS
         if ! rpm -q "$package" >/dev/null 2>&1; then
             echo "Installing $package..."
-            yum install -y "$package"
+            sudo yum install -y "$package"
         fi
     else
         echo "Warning: No supported package manager found. Please install $package manually."
@@ -73,11 +73,11 @@ improve_entropy_for_old_gpg() {
             echo "Low entropy ($entropy) detected for older GPG version. Installing rng-tools..."
 
             if command -v apt-get >/dev/null; then
-                apt-get update -qq && apt-get install -y rng-tools >/dev/null 2>&1
-                rngd -r /dev/urandom >/dev/null 2>&1 &
+                sudo apt-get update -qq && sudo apt-get install -y rng-tools >/dev/null 2>&1
+                sudo rngd -r /dev/urandom >/dev/null 2>&1 &
             elif command -v yum >/dev/null; then
-                yum install -y rng-tools >/dev/null 2>&1
-                rngd -r /dev/urandom >/dev/null 2>&1 &
+                sudo yum install -y rng-tools >/dev/null 2>&1
+                sudo rngd -r /dev/urandom >/dev/null 2>&1 &
             fi
 
             # Wait a moment for entropy to improve
