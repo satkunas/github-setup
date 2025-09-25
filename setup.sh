@@ -541,14 +541,20 @@ fi
 if [[ $UPLOAD_SSH == true ]]; then
     echo "Uploading SSH key to GitHub..."
 
-    # Find SSH public key
-    if [[ -f ~/.ssh/id_ed25519_github.pub ]]; then
-        SSH_PUBLICKEY=$(cat ~/.ssh/id_ed25519_github.pub)
-    elif [[ -f ~/.ssh/id_rsa_github.pub ]]; then
-        SSH_PUBLICKEY=$(cat ~/.ssh/id_rsa_github.pub)
-    else
+    # Find SSH public key (check same files as detection function)
+    local key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_rsa.pub")
+    SSH_PUBLICKEY=""
+
+    for key_file in "${key_files[@]}"; do
+        local expanded_path=$(eval echo $key_file)
+        if [[ -f "$expanded_path" ]]; then
+            SSH_PUBLICKEY=$(cat "$expanded_path")
+            break
+        fi
+    done
+
+    if [[ -z "$SSH_PUBLICKEY" ]]; then
         echo "ERROR: No SSH public key found for upload"
-        SSH_PUBLICKEY=""
     fi
 
     if [[ -n "$SSH_PUBLICKEY" ]]; then
