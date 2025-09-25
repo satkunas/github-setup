@@ -333,42 +333,38 @@ generate_gpg_key() {
     if [[ $major -eq 1 ]]; then
         # GPG 1.4.x - NO --batch support, try basic --gen-key first
         local gpg_flags="--gen-key"
-        # GPG 1.4.12 doesn't support batch files - use expect-style input
-        if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1 << EOF
-1
-2048
-0
-y
-$GIT_NAME
-$GIT_EMAIL
+        # Install expect if needed for GPG 1.4.12 automation
+        install_package "expect"
 
-
-EOF
-        then
-            success=true
-        else
-            # If that fails, try with --no-tty
-            gpg_flags="--no-tty --gen-key"
-            if timeout $timeout_duration gpg $gpg_flags >/dev/null 2>&1 << EOF
-1
-2048
-0
-y
-$GIT_NAME
-$GIT_EMAIL
-
-
-EOF
-            then
+        # GPG 1.4.12 requires expect for full automation
+        if command -v expect >/dev/null 2>&1; then
+            if timeout $timeout_duration expect -c "
+                spawn gpg --gen-key
+                expect {
+                    \"Your selection?\" { send \"1\r\"; exp_continue }
+                    \"What keysize do you want?\" { send \"2048\r\"; exp_continue }
+                    \"Key is valid for?\" { send \"0\r\"; exp_continue }
+                    \"Is this correct?\" { send \"y\r\"; exp_continue }
+                    \"Real name:\" { send \"$GIT_NAME\r\"; exp_continue }
+                    \"Email address:\" { send \"$GIT_EMAIL\r\"; exp_continue }
+                    \"Comment:\" { send \"\r\"; exp_continue }
+                    \"Change (N)ame\" { send \"O\r\"; exp_continue }
+                    \"You need a Passphrase\" { send \"\r\"; exp_continue }
+                    \"Enter passphrase:\" { send \"\r\"; exp_continue }
+                    \"Repeat passphrase:\" { send \"\r\"; exp_continue }
+                    eof
+                }
+            " >/dev/null 2>&1; then
                 success=true
             else
                 local exit_code=$?
                 if [[ $exit_code -eq 124 ]]; then
-                    # For timeout, try regenerating entropy before next attempt
                     generate_entropy
                     sleep 3
                 fi
             fi
+        else
+            echo "ERROR: expect package required for GPG 1.4.12 automation but not available"
         fi
     elif [[ $major -eq 2 && $minor -eq 0 ]]; then
         # GPG 2.0.x - supports --batch, requires pubring/secring
