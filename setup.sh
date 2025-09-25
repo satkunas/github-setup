@@ -38,6 +38,10 @@ read -e -p "GIT email: " -i $GIT_EMAIL GIT_EMAIL
 read -e -p "GIT name: " -i $GIT_NAME GIT_NAME
 read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN GIT_TOKEN
 
+# Configure basic Git user info
+git config --global user.email "$GIT_EMAIL"
+git config --global user.name "$GIT_NAME"
+
 install_package() {
     local package="$1"
     if command -v apt-get >/dev/null; then
@@ -438,6 +442,9 @@ if [[ $UPLOAD_GPG == true ]]; then
     else
         echo "Found GPG key: $GPG_SIGNINGKEY"
 
+        # Configure credential helper for GPG operations
+        git config --global credential.helper netrc
+
         # Prompt for custom name
         default_name="GPG Key: $(get_hostname_identifier)"
         read -e -p "GPG key name: " -i "$default_name" gpg_key_name
@@ -481,43 +488,36 @@ if [[ $GENERATE_GPG == true && -n "$GPG_SIGNINGKEY" ]]; then
 fi
 
 if [[ $CONFIGURE_GIT == true ]]; then
-    cat << EOF > ~/.gitconfig
-[credential]
-  helper = netrc
+    # Configure Git with GPG signing
+    git config --global user.signingkey "$GPG_SIGNINGKEY"
+    git config --global commit.gpgsign true
+    git config --global gpg.program gpg
+    git config --global format.signoff true
 
-[user]
-  email = $GIT_EMAIL
-  name = $GIT_NAME
-  signingkey = $GPG_SIGNINGKEY
+    # Configure Git workflow settings
+    git config --global pull.ff only
+    git config --global alias.up "!git remote update -p; git merge --ff-only @{u}"
+    git config --global alias.ready "rebase -i @{u}"
 
-[pull]
-  ff = only
+    echo "Git configured with GPG signing"
+fi
 
-[alias]
-  up = "!git remote update -p; git merge --ff-only @{u}"
-  ready = rebase -i @{u}
-
-[commit]
-  gpgSign = true
-
-[gpg]
-  program = gpg
-
-[format]
-  signoff = true
-EOF
-
+# Configure shell environment for GPG (only if GPG key was generated)
+if [[ $GENERATE_GPG == true ]]; then
     touch ~/.bashrc
     if [[ -z $(grep "export GPG_TTY=\$(tty)" ~/.bashrc) ]]; then
       echo "export GPG_TTY=\$(tty)" >> ~/.bashrc
     fi
-    if [[ -z $(grep "export HISTFILESIZE=" ~/.bashrc) ]]; then
-      echo "export HISTFILESIZE=65536" >> ~/.bashrc
-    fi
-    if [[ -z $(grep "export HISTSIZE=" ~/.bashrc) ]]; then
-      echo "export HISTSIZE=65536" >> ~/.bashrc
-    fi
     source ~/.bashrc
+fi
+
+# General shell improvements (optional)
+touch ~/.bashrc
+if [[ -z $(grep "export HISTFILESIZE=" ~/.bashrc) ]]; then
+  echo "export HISTFILESIZE=65536" >> ~/.bashrc
+fi
+if [[ -z $(grep "export HISTSIZE=" ~/.bashrc) ]]; then
+  echo "export HISTSIZE=65536" >> ~/.bashrc
 fi
 
 # Execute SSH Generation
@@ -558,6 +558,9 @@ if [[ $UPLOAD_SSH == true ]]; then
     fi
 
     if [[ -n "$SSH_PUBLICKEY" ]]; then
+        # Configure credential helper for SSH operations
+        git config --global credential.helper netrc
+
         # Prompt for custom name
         default_name="SSH Key: $(get_hostname_identifier)"
         read -e -p "SSH key name: " -i "$default_name" ssh_key_name
@@ -587,8 +590,10 @@ EOF
     fi
 fi
 
-# Configure SSH
-if [[ $GENERATE_SSH == true ]]; then
+# Configure SSH (optional)
+read -p "Configure SSH for GitHub (use ssh.github.com:443)? (Y/[n]): " -n 1 -r ssh_config_choice
+echo
+if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
     touch ~/.ssh/config
     mkdir -p ~/.ssh/config.d
     if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
@@ -605,6 +610,9 @@ Host github.com
         Port 443
         User git
 EOF
+      echo "SSH config updated for GitHub"
+    else
+      echo "SSH config already configured for GitHub"
     fi
 fi
 
