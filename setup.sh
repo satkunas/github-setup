@@ -60,28 +60,55 @@ check_entropy() {
     fi
 }
 
-# Function to get appropriate entropy threshold based on kernel version
+# Function to get appropriate entropy threshold based on OS and kernel version
 get_entropy_threshold() {
     local kernel_version=$(uname -r | cut -d. -f1-2)
     local major=$(echo $kernel_version | cut -d. -f1)
     local minor=$(echo $kernel_version | cut -d. -f2)
 
-    # Modern kernels (5.10+) have smaller entropy pools (256 bits max)
-    if [[ $major -gt 5 ]] || [[ $major -eq 5 && $minor -ge 10 ]]; then
-        echo "200"  # Use 200 as threshold for modern kernels
+    # Detect OS version for older systems that struggle with entropy
+    local os_version=""
+    if [[ -f /etc/debian_version ]]; then
+        os_version=$(cat /etc/debian_version | cut -d. -f1)
+    elif [[ -f /etc/redhat-release ]]; then
+        os_version=$(grep -o '[0-9]\+' /etc/redhat-release | head -1)
+    fi
+
+    # Use much lower thresholds for older OS versions that struggle with entropy
+    if [[ -n "$os_version" && "$os_version" -le 7 ]]; then
+        echo "300"  # Very low threshold for old OS versions (Debian 7, RHEL 7, etc.)
+    elif [[ $major -lt 4 ]]; then
+        echo "400"  # Low threshold for very old kernels
+    elif [[ $major -eq 4 ]] || [[ $major -eq 5 && $minor -lt 10 ]]; then
+        echo "500"  # Medium threshold for older kernels
     else
-        echo "1000"  # Use 1000 for older kernels with larger pools
+        echo "200"  # Use 200 as threshold for modern kernels (5.10+)
     fi
 }
 
-# Function to improve entropy for older GPG versions
-improve_entropy_for_old_gpg() {
+# Function to improve entropy for older systems
+improve_entropy_for_old_systems() {
     local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
-    local major=$(echo $version | cut -d. -f1)
-    local minor=$(echo $version | cut -d. -f2)
+    local gpg_major=$(echo $version | cut -d. -f1)
+    local gpg_minor=$(echo $version | cut -d. -f2)
 
-    # Only improve entropy for older GPG versions that use --gen-key
-    if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
+    # Check if we're on an older OS that struggles with entropy
+    local os_version=""
+    if [[ -f /etc/debian_version ]]; then
+        os_version=$(cat /etc/debian_version | cut -d. -f1)
+    elif [[ -f /etc/redhat-release ]]; then
+        os_version=$(grep -o '[0-9]\+' /etc/redhat-release | head -1)
+    fi
+
+    # Improve entropy for older GPG versions OR older OS versions
+    local should_improve=false
+    if [[ $gpg_major -lt 2 ]] || [[ $gpg_major -eq 2 && $gpg_minor -eq 0 ]]; then
+        should_improve=true  # Older GPG versions need entropy
+    elif [[ -n "$os_version" && "$os_version" -le 7 ]]; then
+        should_improve=true  # Older OS versions struggle with entropy
+    fi
+
+    if [[ "$should_improve" == "true" ]]; then
         local entropy=$(check_entropy)
         local threshold=$(get_entropy_threshold)
         if [[ $entropy -lt $threshold ]]; then
@@ -122,7 +149,11 @@ improve_entropy_for_old_gpg() {
             # Wait for entropy to build up, tracking if it stops increasing
             local previous_entropy=0
             local stagnant_count=0
-            local max_stagnant=5  # Allow 5 consecutive readings with no increase
+            # Be more patient with older systems - allow more time for entropy to build
+            local max_stagnant=10
+            if [[ -n "$os_version" && "$os_version" -le 7 ]]; then
+                max_stagnant=15  # Even more patience for very old systems
+            fi
 
             while true; do
                 local current_entropy=$(check_entropy)
@@ -251,8 +282,8 @@ cd ~/.gnupg/
 generate_gpg_config
 # Generate GPG key with version-appropriate command and fallback
 generate_gpg_key() {
-    # Improve entropy before generation if using older GPG version
-    improve_entropy_for_old_gpg
+    # Improve entropy before generation if using older systems
+    improve_entropy_for_old_systems
 
     local commands=("$(get_gpg_command)" "--full-generate-key" "--full-gen-key" "--gen-key")
 
