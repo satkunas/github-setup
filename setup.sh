@@ -525,15 +525,31 @@ if [[ $GENERATE_SSH == true ]]; then
     echo "Generating SSH key..."
     eval "$(ssh-agent -s)"
 
-    # Generate SSH key (ED25519 preferred)
-    if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github -N "" 2>/dev/null; then
-        ssh-add ~/.ssh/id_ed25519_github
-        echo "ED25519 key generated"
-    elif ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
-        ssh-add ~/.ssh/id_rsa_github
-        echo "RSA key generated"
+    # Check SSH version for key type support
+    ssh_version=$(ssh -V 2>&1 | grep -o 'OpenSSH_[0-9]\+\.[0-9]\+' | sed 's/OpenSSH_//')
+    ssh_major=$(echo $ssh_version | cut -d. -f1)
+    ssh_minor=$(echo $ssh_version | cut -d. -f2)
+
+    # Generate SSH key with version-appropriate options
+    if [[ $ssh_major -gt 6 ]] || [[ $ssh_major -eq 6 && $ssh_minor -ge 5 ]]; then
+        # OpenSSH 6.5+ - ED25519 supported
+        if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github -N "" 2>/dev/null; then
+            ssh-add ~/.ssh/id_ed25519_github
+            echo "ED25519 key generated"
+        elif ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
+            ssh-add ~/.ssh/id_rsa_github
+            echo "RSA 4096 key generated"
+        else
+            echo "ERROR: SSH key generation failed"
+        fi
     else
-        echo "ERROR: SSH key generation failed"
+        # OpenSSH < 6.5 - use RSA only with smaller key size for compatibility
+        if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
+            ssh-add ~/.ssh/id_rsa_github
+            echo "RSA 2048 key generated (legacy mode)"
+        else
+            echo "ERROR: SSH key generation failed"
+        fi
     fi
 fi
 
@@ -594,14 +610,22 @@ fi
 read -p "Configure SSH for GitHub (use ssh.github.com:443)? (Y/[n]): " -n 1 -r ssh_config_choice
 echo
 if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
+    # Check SSH version for Include directive support (OpenSSH 7.3+)
+    ssh_version=$(ssh -V 2>&1 | grep -o 'OpenSSH_[0-9]\+\.[0-9]\+' | sed 's/OpenSSH_//')
+    ssh_major=$(echo $ssh_version | cut -d. -f1)
+    ssh_minor=$(echo $ssh_version | cut -d. -f2)
+
     touch ~/.ssh/config
-    mkdir -p ~/.ssh/config.d
-    if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
-      echo "Include config.d/github" >> ~/.ssh/config;
-      cat << EOF > ~/.ssh/config.d/github
+
+    # Use Include directive for OpenSSH 7.3+ (major > 7 OR major = 7 AND minor >= 3)
+    if [[ $ssh_major -gt 7 ]] || [[ $ssh_major -eq 7 && $ssh_minor -ge 3 ]]; then
+        # Modern SSH - use Include directive
+        mkdir -p ~/.ssh/config.d
+        if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
+          echo "Include config.d/github" >> ~/.ssh/config;
+          cat << EOF > ~/.ssh/config.d/github
 Host *
         AddKeysToAgent yes
-        #UseKeychain yes
         IdentityFile ~/.ssh/id_ed25519_github
         IdentityFile ~/.ssh/id_rsa_github
 
@@ -610,9 +634,45 @@ Host github.com
         Port 443
         User git
 EOF
-      echo "SSH config updated for GitHub"
+          echo "SSH config updated for GitHub (using Include)"
+        else
+          echo "SSH config already configured for GitHub"
+        fi
     else
-      echo "SSH config already configured for GitHub"
+        # Legacy SSH (OpenSSH < 7.3) - use minimal compatible config
+        if [[ -z $(grep "Host github.com" ~/.ssh/config) ]]; then
+          # For very old SSH (like 6.0p1), use only well-supported options
+          if [[ $ssh_major -lt 6 ]] || [[ $ssh_major -eq 6 && $ssh_minor -lt 7 ]]; then
+            # OpenSSH < 6.7 - minimal config without AddKeysToAgent
+            cat << EOF >> ~/.ssh/config
+
+# GitHub configuration (minimal for OpenSSH < 6.7)
+Host github.com
+        Hostname ssh.github.com
+        Port 443
+        User git
+        IdentityFile ~/.ssh/id_rsa_github
+EOF
+          else
+            # OpenSSH 6.7+ but < 7.3 - can use AddKeysToAgent
+            cat << EOF >> ~/.ssh/config
+
+# GitHub configuration
+Host *
+        AddKeysToAgent yes
+        IdentityFile ~/.ssh/id_ed25519_github
+        IdentityFile ~/.ssh/id_rsa_github
+
+Host github.com
+        Hostname ssh.github.com
+        Port 443
+        User git
+EOF
+          fi
+          echo "SSH config updated for GitHub (legacy mode)"
+        else
+          echo "SSH config already configured for GitHub"
+        fi
     fi
 fi
 
