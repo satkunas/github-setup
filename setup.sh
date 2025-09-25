@@ -48,7 +48,21 @@ install_package() {
 }
 
 # Install required packages
-install_package "gpg"
+# Try 'gnupg' first (more common on older systems), fall back to 'gpg'
+if command -v apt-get >/dev/null; then
+    if ! command -v gpg >/dev/null 2>&1; then
+        if ! dpkg -l | grep -q "^ii  gnupg "; then
+            echo "Installing gnupg..."
+            sudo apt-get update -qq && sudo apt-get install -y gnupg >/dev/null 2>&1
+        fi
+        # If gnupg didn't provide gpg command, try installing gpg package
+        if ! command -v gpg >/dev/null 2>&1; then
+            install_package "gpg"
+        fi
+    fi
+else
+    install_package "gpg"
+fi
 install_package "git"
 
 # Function to check available entropy
@@ -88,9 +102,15 @@ get_entropy_threshold() {
 
 # Function to improve entropy for older systems
 improve_entropy_for_old_systems() {
-    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
     local gpg_major=$(echo $version | cut -d. -f1)
     local gpg_minor=$(echo $version | cut -d. -f2)
+
+    # Handle empty or invalid version numbers
+    if [[ -z "$gpg_major" ]] || [[ "$gpg_major" == "gpg" ]]; then
+        gpg_major=1
+        gpg_minor=4
+    fi
 
     # Check if we're on an older OS that struggles with entropy
     local os_version=""
@@ -116,19 +136,27 @@ improve_entropy_for_old_systems() {
 
             # Try multiple entropy improvement methods
             if command -v apt-get >/dev/null; then
-                # Install haveged for better entropy generation
+                # Install haveged for better entropy generation (may not be available on very old systems)
                 if ! dpkg -l | grep -q "^ii  haveged "; then
                     echo "Installing haveged..."
-                    sudo apt-get update -qq && sudo apt-get install -y haveged >/dev/null 2>&1
-                    sudo service haveged start >/dev/null 2>&1
+                    if sudo apt-get update -qq && sudo apt-get install -y haveged >/dev/null 2>&1; then
+                        sudo service haveged start >/dev/null 2>&1 || sudo systemctl start haveged >/dev/null 2>&1 || true
+                    else
+                        echo "haveged not available, trying rng-tools..."
+                    fi
                 fi
 
-                # Also install rng-tools as backup
+                # Also install rng-tools as backup (more likely to be available on older systems)
                 if ! dpkg -l | grep -q "^ii  rng-tools "; then
                     echo "Installing rng-tools..."
-                    sudo apt-get install -y rng-tools >/dev/null 2>&1
+                    if sudo apt-get install -y rng-tools >/dev/null 2>&1; then
+                        sudo rngd -r /dev/urandom >/dev/null 2>&1 &
+                    else
+                        echo "rng-tools not available, using manual entropy generation..."
+                    fi
+                else
+                    sudo rngd -r /dev/urandom >/dev/null 2>&1 &
                 fi
-                sudo rngd -r /dev/urandom >/dev/null 2>&1 &
             elif command -v yum >/dev/null; then
                 if ! rpm -q haveged >/dev/null 2>&1; then
                     echo "Installing haveged..."
@@ -185,14 +213,21 @@ improve_entropy_for_old_systems() {
 
 # Function to get GPG version and determine appropriate command
 get_gpg_command() {
-    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
     local major=$(echo $version | cut -d. -f1)
     local minor=$(echo $version | cut -d. -f2)
     local patch=$(echo $version | cut -d. -f3)
 
+    # Handle empty or invalid version numbers
+    if [[ -z "$major" ]] || [[ "$major" == "gpg" ]]; then
+        # Very old GPG or parsing failed, assume 1.4
+        echo "--gen-key"
+        return
+    fi
+
     # Version comparison logic
     if [[ $major -lt 2 ]]; then
-        # GPG 1.x
+        # GPG 1.x - very common on Debian 7
         echo "--gen-key"
     elif [[ $major -eq 2 && $minor -eq 0 ]]; then
         # GPG 2.0.x
@@ -213,9 +248,15 @@ get_gpg_command() {
 
 # Function to generate GPG configuration based on version
 generate_gpg_config() {
-    local version=$(gpg --version | head -n1 | sed 's/gpg (GnuPG) //')
+    local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
     local major=$(echo $version | cut -d. -f1)
     local minor=$(echo $version | cut -d. -f2)
+
+    # Handle empty or invalid version numbers
+    if [[ -z "$major" ]] || [[ "$major" == "gpg" ]]; then
+        major=1
+        minor=4
+    fi
 
     cat >~/.gnupg/conf <<EOF
 %echo GPG generating...
@@ -227,13 +268,19 @@ Name-Real: $GIT_NAME
 Name-Comment: $GIT_NAME
 Name-Email: $GIT_EMAIL
 Expire-Date: 0
-Passphrase:
 EOF
 
-    # Add version-specific configuration for older GPG
+    # Handle passphrase configuration based on GPG version
     if [[ $major -lt 2 ]] || [[ $major -eq 2 && $minor -eq 0 ]]; then
+        # For older GPG versions (1.x and 2.0.x), use %no-ask-passphrase
         cat >>~/.gnupg/conf <<EOF
+%no-ask-passphrase
 %no-protection
+EOF
+    else
+        # For newer GPG versions, use empty passphrase
+        cat >>~/.gnupg/conf <<EOF
+Passphrase:
 EOF
     fi
 
