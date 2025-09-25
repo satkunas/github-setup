@@ -185,8 +185,8 @@ get_gpg_command() {
     fi
 }
 
-# Function to generate GPG configuration based on version
-generate_gpg_config() {
+# Consolidated GPG version detection function
+get_gpg_version() {
     local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
     local major=$(echo $version | cut -d. -f1)
     local minor=$(echo $version | cut -d. -f2)
@@ -196,6 +196,16 @@ generate_gpg_config() {
         major=1
         minor=4
     fi
+
+    # Return version components
+    echo "$major.$minor"
+}
+
+# Function to generate GPG configuration based on version
+generate_gpg_config() {
+    local gpg_ver=$(get_gpg_version)
+    local major=$(echo $gpg_ver | cut -d. -f1)
+    local minor=$(echo $gpg_ver | cut -d. -f2)
 
     # Use standard key size
     local key_length=2048
@@ -311,15 +321,9 @@ generate_gpg_key() {
 
 
     # Detect GPG version for proper command selection
-    local version=$(gpg --version 2>/dev/null | head -n1 | sed 's/gpg (GnuPG) //' || echo "1.4.0")
-    local major=$(echo $version | cut -d. -f1)
-    local minor=$(echo $version | cut -d. -f2)
-
-    # Handle empty or invalid version numbers
-    if [[ -z "$major" ]] || [[ "$major" == "gpg" ]]; then
-        major=1
-        minor=4
-    fi
+    local gpg_ver=$(get_gpg_version)
+    local major=$(echo $gpg_ver | cut -d. -f1)
+    local minor=$(echo $gpg_ver | cut -d. -f2)
 
     local success=false
 
@@ -404,11 +408,56 @@ generate_gpg_key() {
 
 generate_gpg_key
 
-GPG_SIGNINGKEY=$(gpg --list-secret-keys --keyid-format=long| sed -En 's/sec\s+.*\/([0-9A-F]+)\s+.*/\1/p')
+# Extract GPG key ID - robust cross-version approach
+extract_gpg_key_id() {
+    local key_id=""
+
+    # Method 1: Machine-readable format (most reliable across ALL versions)
+    key_id=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5; exit}')
+    if [[ -n "$key_id" && "$key_id" =~ ^[A-F0-9]{8,16}$ ]]; then
+        echo "$key_id"
+        return 0
+    fi
+
+    # Method 2: Human-readable with long format (fallback)
+    key_id=$(gpg --list-secret-keys --keyid-format=long 2>/dev/null | sed -n 's/^sec.*\/\([A-F0-9]\{16\}\).*/\1/p' | head -n1)
+    if [[ -n "$key_id" && "$key_id" =~ ^[A-F0-9]{16}$ ]]; then
+        echo "$key_id"
+        return 0
+    fi
+
+    # Method 3: Basic parsing (final fallback)
+    key_id=$(gpg --list-secret-keys 2>/dev/null | sed -n 's/^sec.*\/\([A-F0-9]\{8,16\}\).*/\1/p' | head -n1)
+    if [[ -n "$key_id" && "$key_id" =~ ^[A-F0-9]{8,16}$ ]]; then
+        echo "$key_id"
+        return 0
+    fi
+
+    return 1
+}
+
+GPG_SIGNINGKEY=$(extract_gpg_key_id)
+
+# Verify key extraction succeeded
+if [[ -z "$GPG_SIGNINGKEY" ]]; then
+    echo "ERROR: Failed to extract GPG key ID. GPG key generation may have failed."
+    echo "Please run 'gpg --list-secret-keys' to verify key exists."
+    exit 1
+fi
+
+echo "GPG key ID extracted: $GPG_SIGNINGKEY"
 GPG_PUBLICKEY=$(gpg --armor --export $GPG_SIGNINGKEY)
+
+# Verify public key export succeeded
+if [[ -z "$GPG_PUBLICKEY" ]]; then
+    echo "ERROR: Failed to export GPG public key for key ID: $GPG_SIGNINGKEY"
+    exit 1
+fi
+
 GPG_PUBLICKEY_ESCAPED=${GPG_PUBLICKEY//$'\n'/\\n}
 
-curl -L \
+# Upload GPG key to GitHub
+GPG_UPLOAD_RESPONSE=$(curl -L -s \
   -X POST \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer $GIT_TOKEN" \
@@ -420,7 +469,18 @@ curl -L \
     "armored_public_key":"$GPG_PUBLICKEY_ESCAPED"
   }
 EOF
-)
+))
+
+if echo "$GPG_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
+    echo "WARNING: GPG key upload failed. Your GitHub token needs the 'write:gpg_keys' scope."
+    echo "Please update your token permissions at: https://github.com/settings/tokens"
+elif echo "$GPG_UPLOAD_RESPONSE" | grep -q "key is already in use"; then
+    echo "GPG key already exists on GitHub - skipping upload."
+elif echo "$GPG_UPLOAD_RESPONSE" | grep -q '"id"'; then
+    echo "GPG key successfully uploaded to GitHub."
+else
+    echo "GPG key upload status unclear. Response: $GPG_UPLOAD_RESPONSE"
+fi
 
 cat << EOF > ~/.gitconfig
 [credential]
@@ -465,11 +525,11 @@ eval "$(ssh-agent -s)"
 # Try ED25519 first, fall back to RSA if not supported
 KEY_FILE=""
 if [[ ! -f ~/.ssh/id_ed25519_github ]]; then
-  if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github 2>/dev/null; then
+  if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github -N "" 2>/dev/null; then
     KEY_FILE="~/.ssh/id_ed25519_github"
     ssh-add ~/.ssh/id_ed25519_github
   elif [[ ! -f ~/.ssh/id_rsa_github ]]; then
-        ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github
+        ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""
     KEY_FILE="~/.ssh/id_rsa_github"
     ssh-add ~/.ssh/id_rsa_github
   fi
@@ -493,7 +553,8 @@ else
   exit 1
 fi
 
-curl -L \
+# Upload SSH key to GitHub
+SSH_UPLOAD_RESPONSE=$(curl -L -s \
   -X POST \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer $GIT_TOKEN" \
@@ -505,7 +566,18 @@ curl -L \
     "key":"$SSH_PUBLICKEY"
   }
 EOF
-)
+))
+
+if echo "$SSH_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
+    echo "WARNING: SSH key upload failed. Your GitHub token needs the 'write:public_key' scope."
+    echo "Please update your token permissions at: https://github.com/settings/tokens"
+elif echo "$SSH_UPLOAD_RESPONSE" | grep -q "key is already in use"; then
+    echo "SSH key already exists on GitHub - skipping upload."
+elif echo "$SSH_UPLOAD_RESPONSE" | grep -q '"id"'; then
+    echo "SSH key successfully uploaded to GitHub."
+else
+    echo "SSH key upload status unclear. Response: $SSH_UPLOAD_RESPONSE"
+fi
 
 touch ~/.ssh/config
 mkdir -p ~/.ssh/config.d
