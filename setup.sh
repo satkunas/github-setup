@@ -104,18 +104,34 @@ improve_entropy_for_old_gpg() {
             echo "Generating additional entropy..."
             dd if=/dev/urandom of=/dev/random count=1 bs=4096 >/dev/null 2>&1 &
 
-            # Wait longer for entropy to build up
-            local max_wait=30
-            local waited=0
-            while [[ $waited -lt $max_wait ]]; do
+            # Wait for entropy to build up, tracking if it stops increasing
+            local previous_entropy=0
+            local stagnant_count=0
+            local max_stagnant=5  # Allow 5 consecutive readings with no increase
+
+            while true; do
                 local current_entropy=$(check_entropy)
                 echo "Current entropy: $current_entropy (waiting for >1000)"
+
                 if [[ $current_entropy -gt 1000 ]]; then
                     echo "Sufficient entropy achieved: $current_entropy"
                     break
                 fi
+
+                # Check if entropy has increased
+                if [[ $current_entropy -le $previous_entropy ]]; then
+                    stagnant_count=$((stagnant_count + 1))
+                    if [[ $stagnant_count -ge $max_stagnant ]]; then
+                        echo "Warning: Entropy appears to have stopped increasing (current: $current_entropy)"
+                        echo "Continuing with GPG generation despite low entropy..."
+                        break
+                    fi
+                else
+                    stagnant_count=0  # Reset counter when entropy increases
+                fi
+
+                previous_entropy=$current_entropy
                 sleep 2
-                waited=$((waited + 2))
             done
         fi
     fi
