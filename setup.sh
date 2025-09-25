@@ -542,11 +542,11 @@ if [[ $UPLOAD_SSH == true ]]; then
     echo "Uploading SSH key to GitHub..."
 
     # Find SSH public key (check same files as detection function)
-    local key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_rsa.pub")
+    key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_rsa.pub")
     SSH_PUBLICKEY=""
 
     for key_file in "${key_files[@]}"; do
-        local expanded_path=$(eval echo $key_file)
+        expanded_path=$(eval echo $key_file)
         if [[ -f "$expanded_path" ]]; then
             SSH_PUBLICKEY=$(cat "$expanded_path")
             break
