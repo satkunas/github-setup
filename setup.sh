@@ -135,39 +135,20 @@ improve_entropy_for_old_systems() {
             echo "Low entropy ($entropy) detected for older GPG version. Improving entropy..."
 
             # Try multiple entropy improvement methods
-            if command -v apt-get >/dev/null; then
-                # Install haveged for better entropy generation (may not be available on very old systems)
-                if ! dpkg -l | grep -q "^ii  haveged "; then
-                    echo "Installing haveged..."
-                    if sudo apt-get update -qq && sudo apt-get install -y haveged >/dev/null 2>&1; then
-                        sudo service haveged start >/dev/null 2>&1 || sudo systemctl start haveged >/dev/null 2>&1 || true
-                    else
-                        echo "haveged not available, trying rng-tools..."
-                    fi
-                fi
+            # Install haveged for better entropy generation
+            install_package "haveged"
+            if command -v haveged >/dev/null 2>&1; then
+                sudo service haveged start >/dev/null 2>&1 || sudo systemctl start haveged >/dev/null 2>&1 || true
+            else
+                echo "haveged not available, trying rng-tools..."
+            fi
 
-                # Also install rng-tools as backup (more likely to be available on older systems)
-                if ! dpkg -l | grep -q "^ii  rng-tools "; then
-                    echo "Installing rng-tools..."
-                    if sudo apt-get install -y rng-tools >/dev/null 2>&1; then
-                        sudo rngd -r /dev/urandom >/dev/null 2>&1 &
-                    else
-                        echo "rng-tools not available, using manual entropy generation..."
-                    fi
-                else
-                    sudo rngd -r /dev/urandom >/dev/null 2>&1 &
-                fi
-            elif command -v yum >/dev/null; then
-                if ! rpm -q haveged >/dev/null 2>&1; then
-                    echo "Installing haveged..."
-                    sudo yum install -y haveged >/dev/null 2>&1
-                    sudo service haveged start >/dev/null 2>&1
-                fi
-                if ! rpm -q rng-tools >/dev/null 2>&1; then
-                    echo "Installing rng-tools..."
-                    sudo yum install -y rng-tools >/dev/null 2>&1
-                fi
+            # Also install rng-tools as backup (more likely to be available on older systems)
+            install_package "rng-tools"
+            if command -v rngd >/dev/null 2>&1; then
                 sudo rngd -r /dev/urandom >/dev/null 2>&1 &
+            else
+                echo "rng-tools not available, using manual entropy generation..."
             fi
 
             # Generate some entropy manually
