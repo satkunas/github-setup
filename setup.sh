@@ -20,6 +20,13 @@ source $PWD/defaults
 GIT_DOTDIR=$PWD/.git
 HOSTNAME=$(hostname)
 
+# Detect if running as root - only use sudo if not root
+if [[ $EUID -eq 0 ]]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
 if [[ $# -gt 0 ]]; then
   SCRIPT=$(realpath "$0")
   SCRIPTPATH=$(dirname "$SCRIPT")
@@ -34,9 +41,12 @@ fi
 echo "Using GIT directory $GIT_DOTDIR"
 git config core.editor "vi"
 
-read -e -p "GIT email: " -i $GIT_EMAIL GIT_EMAIL
-read -e -p "GIT name: " -i $GIT_NAME GIT_NAME
-read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN GIT_TOKEN
+read -e -p "GIT email: " -i $GIT_EMAIL git_email_input
+GIT_EMAIL=${git_email_input:-$GIT_EMAIL}
+read -e -p "GIT name: " -i $GIT_NAME git_name_input
+GIT_NAME=${git_name_input:-$GIT_NAME}
+read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN git_token_input
+GIT_TOKEN=${git_token_input:-$GIT_TOKEN}
 
 # Configure basic Git user info
 git config --global user.email "$GIT_EMAIL"
@@ -47,12 +57,12 @@ install_package() {
     if command -v apt-get >/dev/null; then
         if ! dpkg -l | grep -q "^ii  $package "; then
             echo "Installing $package..."
-            sudo apt-get update -qq && sudo apt-get install -y "$package"
+            $SUDO apt-get update -qq && $SUDO apt-get install -y "$package"
         fi
     elif command -v yum >/dev/null; then
         if ! rpm -q "$package" >/dev/null 2>&1; then
             echo "Installing $package..."
-            sudo yum install -y "$package"
+            $SUDO yum install -y "$package"
         fi
     else
         echo "Warning: No supported package manager found. Please install $package manually."
@@ -64,7 +74,7 @@ if command -v apt-get >/dev/null; then
     if ! command -v gpg >/dev/null 2>&1; then
         if ! dpkg -l | grep -q "^ii  gnupg "; then
             echo "Installing gnupg..."
-            sudo apt-get update -qq && sudo apt-get install -y gnupg >/dev/null 2>&1
+            $SUDO apt-get update -qq && $SUDO apt-get install -y gnupg >/dev/null 2>&1
         fi
         if ! command -v gpg >/dev/null 2>&1; then
             install_package "gpg"
@@ -159,6 +169,8 @@ generate_gpg_config() {
     local gpg_ver=$(get_gpg_version)
     local major=$(echo $gpg_ver | cut -d. -f1)
     local minor=$(echo $gpg_ver | cut -d. -f2)
+    local use_passphrase="$1"
+    local passphrase="$2"
 
     # Use standard key size
     local key_length=2048
@@ -175,8 +187,13 @@ Name-Email: $GIT_EMAIL
 Expire-Date: 0
 EOF
 
-    # Handle passphrase configuration based on GPG version
-    if [[ $major -eq 1 ]]; then
+    # Handle passphrase configuration based on GPG version and user choice
+    if [[ "$use_passphrase" == "true" && -n "$passphrase" ]]; then
+        # User wants passphrase protection
+        cat >>~/.gnupg/conf <<EOF
+Passphrase: $passphrase
+EOF
+    elif [[ $major -eq 1 ]]; then
         # GPG 1.4.x - omit passphrase entirely, will use empty passphrase by default
         # Don't add any passphrase line - just a no-op
         true
@@ -187,9 +204,9 @@ EOF
 %no-protection
 EOF
     else
-        # For GPG 2.1.x+, use empty passphrase
+        # For GPG 2.1.x+, use no protection
         cat >>~/.gnupg/conf <<EOF
-Passphrase:
+%no-protection
 EOF
     fi
 
@@ -230,12 +247,10 @@ initialize_gpg() {
 
 gpg --list-keys
 initialize_gpg
-cd ~/.gnupg/
 
 ###
 # https://www.gnupg.org/documentation/manuals/gnupg-devel/Unattended-GPG-key-generation.html
 ###
-generate_gpg_config
 # Function to prepare GPG environment
 prepare_gpg_environment() {
     # Ensure GPG directory has correct permissions
@@ -427,7 +442,35 @@ echo
 # Execute GPG Generation
 if [[ $GENERATE_GPG == true ]]; then
     echo "Generating GPG key..."
+
+    # Ask about passphrase protection
+    USE_GPG_PASSPHRASE=false
+    GPG_PASSPHRASE=""
+    read -p "Protect GPG key with passphrase? (Y/[n]): " -n 1 -r gpg_pass_choice
+    echo
+    if [[ $gpg_pass_choice =~ ^[Yy]$ ]]; then
+        USE_GPG_PASSPHRASE=true
+        read -s -p "Enter GPG passphrase: " GPG_PASSPHRASE
+        echo
+        read -s -p "Confirm GPG passphrase: " GPG_PASSPHRASE_CONFIRM
+        echo
+        if [[ "$GPG_PASSPHRASE" != "$GPG_PASSPHRASE_CONFIRM" ]]; then
+            echo "ERROR: Passphrases don't match"
+            exit 1
+        fi
+    fi
+
+    # Generate config with passphrase settings
+    cd ~/.gnupg/
+    generate_gpg_config "$USE_GPG_PASSPHRASE" "$GPG_PASSPHRASE"
+    cd - >/dev/null
+
+    # Generate the key
     generate_gpg_key
+
+    # Clear passphrase from memory
+    GPG_PASSPHRASE=""
+    GPG_PASSPHRASE_CONFIRM=""
 fi
 
 # Execute GPG Upload
@@ -447,7 +490,8 @@ if [[ $UPLOAD_GPG == true ]]; then
 
         # Prompt for custom name
         default_name="GPG Key: $(get_hostname_identifier)"
-        read -e -p "GPG key name: " -i "$default_name" gpg_key_name
+        read -e -p "GPG key name: " -i "$default_name" gpg_key_name_input
+        gpg_key_name=${gpg_key_name_input:-$default_name}
 
         GPG_PUBLICKEY=$(gpg --armor --export $GPG_SIGNINGKEY)
         GPG_PUBLICKEY_ESCAPED=${GPG_PUBLICKEY//$'\n'/\\n}
@@ -525,46 +569,82 @@ if [[ $GENERATE_SSH == true ]]; then
     echo "Generating SSH key..."
     eval "$(ssh-agent -s)"
 
+    # Ask about passphrase protection
+    SSH_PASSPHRASE=""
+    read -p "Protect SSH key with passphrase? (Y/[n]): " -n 1 -r ssh_pass_choice
+    echo
+    if [[ $ssh_pass_choice =~ ^[Yy]$ ]]; then
+        read -s -p "Enter SSH passphrase: " SSH_PASSPHRASE
+        echo
+        read -s -p "Confirm SSH passphrase: " SSH_PASSPHRASE_CONFIRM
+        echo
+        if [[ "$SSH_PASSPHRASE" != "$SSH_PASSPHRASE_CONFIRM" ]]; then
+            echo "ERROR: Passphrases don't match"
+            exit 1
+        fi
+    fi
+
     # Check SSH version for key type support
     ssh_version=$(ssh -V 2>&1 | grep -o 'OpenSSH_[0-9]\+\.[0-9]\+' | sed 's/OpenSSH_//')
     ssh_major=$(echo $ssh_version | cut -d. -f1)
     ssh_minor=$(echo $ssh_version | cut -d. -f2)
 
     # Generate SSH key with version-appropriate options
+    SSH_KEY_GENERATED=false
     if [[ $ssh_major -gt 6 ]] || [[ $ssh_major -eq 6 && $ssh_minor -ge 5 ]]; then
-        # OpenSSH 6.5+ - ED25519 supported
-        if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github -N "" 2>/dev/null; then
+        # OpenSSH 6.5+ - ED25519 supported (preferred)
+        # Remove existing key if present to avoid overwrite prompt
+        rm -f ~/.ssh/id_ed25519_github ~/.ssh/id_ed25519_github.pub 2>/dev/null
+        if ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f ~/.ssh/id_ed25519_github -N "$SSH_PASSPHRASE" 2>/dev/null; then
             ssh-add ~/.ssh/id_ed25519_github
             echo "ED25519 key generated"
-        elif ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
-            ssh-add ~/.ssh/id_rsa_github
-            echo "RSA 4096 key generated"
-        else
-            echo "ERROR: SSH key generation failed"
+            SSH_KEY_GENERATED=true
+        fi
+
+        # Fallback to RSA if ed25519 failed
+        if [[ $SSH_KEY_GENERATED == false ]]; then
+            rm -f ~/.ssh/id_rsa_github ~/.ssh/id_rsa_github.pub 2>/dev/null
+            if ssh-keygen -t rsa -b 4096 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N "$SSH_PASSPHRASE"; then
+                ssh-add ~/.ssh/id_rsa_github
+                echo "RSA 4096 key generated"
+                SSH_KEY_GENERATED=true
+            fi
         fi
     else
         # OpenSSH < 6.5 - prefer ECDSA over RSA for better security
         if [[ $ssh_major -gt 5 ]] || [[ $ssh_major -eq 5 && $ssh_minor -ge 7 ]]; then
             # OpenSSH 5.7+ supports ECDSA - more secure than RSA
-            if ssh-keygen -t ecdsa -b 256 -C "$GIT_EMAIL" -f ~/.ssh/id_ecdsa_github -N ""; then
+            rm -f ~/.ssh/id_ecdsa_github ~/.ssh/id_ecdsa_github.pub 2>/dev/null
+            if ssh-keygen -t ecdsa -b 256 -C "$GIT_EMAIL" -f ~/.ssh/id_ecdsa_github -N "$SSH_PASSPHRASE"; then
                 ssh-add ~/.ssh/id_ecdsa_github
                 echo "ECDSA P-256 key generated (legacy mode)"
-            elif ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
-                ssh-add ~/.ssh/id_rsa_github
-                echo "RSA 2048 key generated (fallback)"
+                SSH_KEY_GENERATED=true
             else
-                echo "ERROR: SSH key generation failed"
+                rm -f ~/.ssh/id_rsa_github ~/.ssh/id_rsa_github.pub 2>/dev/null
+                if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N "$SSH_PASSPHRASE"; then
+                    ssh-add ~/.ssh/id_rsa_github
+                    echo "RSA 2048 key generated (fallback)"
+                    SSH_KEY_GENERATED=true
+                fi
             fi
         else
             # Very old OpenSSH < 5.7 - RSA only
-            if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N ""; then
+            rm -f ~/.ssh/id_rsa_github ~/.ssh/id_rsa_github.pub 2>/dev/null
+            if ssh-keygen -t rsa -b 2048 -C "$GIT_EMAIL" -f ~/.ssh/id_rsa_github -N "$SSH_PASSPHRASE"; then
                 ssh-add ~/.ssh/id_rsa_github
                 echo "RSA 2048 key generated (very legacy mode)"
-            else
-                echo "ERROR: SSH key generation failed"
+                SSH_KEY_GENERATED=true
             fi
         fi
     fi
+
+    if [[ $SSH_KEY_GENERATED == false ]]; then
+        echo "ERROR: SSH key generation failed"
+    fi
+
+    # Clear passphrase from memory
+    SSH_PASSPHRASE=""
+    SSH_PASSPHRASE_CONFIRM=""
 fi
 
 # Execute SSH Upload
@@ -593,7 +673,8 @@ if [[ $UPLOAD_SSH == true ]]; then
 
         # Prompt for custom name
         default_name="SSH Key: $(get_hostname_identifier)"
-        read -e -p "SSH key name: " -i "$default_name" ssh_key_name
+        read -e -p "SSH key name: " -i "$default_name" ssh_key_name_input
+        ssh_key_name=${ssh_key_name_input:-$default_name}
 
         # Upload to GitHub
         SSH_UPLOAD_RESPONSE=$(curl -L -s \
