@@ -334,20 +334,16 @@ generate_gpg_key() {
             fi
         fi
     else
-        # GPG 2.1.x+ - try multiple commands in order of preference
-        local commands=("--batch --full-generate-key" "--batch --full-gen-key" "--batch --gen-key")
-        for cmd in "${commands[@]}"; do
-            if timeout $timeout_duration gpg $cmd "$HOME/.gnupg/conf" >/dev/null 2>&1; then
-                success=true
-                break
-            else
-                local exit_code=$?
-                if [[ $exit_code -eq 124 ]]; then
-                    improve_entropy
-                    sleep 3
-                fi
+        # GPG 2.1.x+ - use --batch --gen-key for batch generation
+        if timeout $timeout_duration gpg --batch --gen-key "$HOME/.gnupg/conf" 2>&1 | grep -q "done\|complete"; then
+            success=true
+        else
+            local exit_code=$?
+            if [[ $exit_code -eq 124 ]]; then
+                improve_entropy
+                sleep 3
             fi
-        done
+        fi
     fi
 
 
