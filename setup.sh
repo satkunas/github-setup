@@ -9,9 +9,9 @@ cleanup() {
 
 # Set up trap handlers for cleanup
 trap cleanup EXIT
-trap cleanup INT
-trap cleanup TERM
-trap cleanup HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
 if [[ ! -f defaults ]]; then
   cp -p defaults.example defaults
 fi
@@ -334,15 +334,49 @@ generate_gpg_key() {
             fi
         fi
     else
-        # GPG 2.1.x+ - use --batch --gen-key for batch generation
-        if timeout $timeout_duration gpg --batch --gen-key "$HOME/.gnupg/conf" 2>&1 | grep -q "done\|complete"; then
-            success=true
+        # GPG 2.1.x+ - use --quick-generate-key which is more reliable
+        # Configure gpg-agent to allow loopback pinentry
+        mkdir -p ~/.gnupg
+        if ! grep -q "allow-loopback-pinentry" ~/.gnupg/gpg-agent.conf 2>/dev/null; then
+            echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+        fi
+        # Reload gpg-agent to pick up new config
+        gpgconf --kill gpg-agent 2>/dev/null || true
+
+        # Build the gpg command based on passphrase
+        local gpg_cmd="gpg --batch --pinentry-mode loopback"
+
+        # Read passphrase from config file if present
+        local passphrase_val=""
+        if [[ -f "$HOME/.gnupg/conf" ]]; then
+            passphrase_val=$(grep "^Passphrase:" "$HOME/.gnupg/conf" 2>/dev/null | sed 's/^Passphrase: *//')
+        fi
+
+        if [[ -n "$passphrase_val" ]]; then
+            gpg_cmd="$gpg_cmd --passphrase-fd 0"
         else
-            local exit_code=$?
-            if [[ $exit_code -eq 124 ]]; then
-                improve_entropy
-                sleep 3
+            gpg_cmd="$gpg_cmd --passphrase ''"
+        fi
+
+        # Use --quick-generate-key for GPG 2.1+
+        # Format: gpg --quick-generate-key "Name <email>" algo usage expiration
+        local gpg_output
+        if [[ -n "$passphrase_val" ]]; then
+            gpg_output=$(echo "$passphrase_val" | timeout $timeout_duration $gpg_cmd --quick-generate-key "$GIT_NAME <$GIT_EMAIL>" rsa2048 default never 2>&1)
+        else
+            gpg_output=$(timeout $timeout_duration $gpg_cmd --quick-generate-key "$GIT_NAME <$GIT_EMAIL>" rsa2048 default never 2>&1)
+        fi
+        local gpg_exit_code=$?
+
+        if [[ $gpg_exit_code -eq 0 ]]; then
+            # Verify key was actually created
+            local new_key=$(gpg --list-secret-keys --with-colons "$GIT_EMAIL" 2>/dev/null | awk -F: '/^sec:/ {print $5; exit}')
+            if [[ -n "$new_key" ]]; then
+                success=true
             fi
+        elif [[ $gpg_exit_code -eq 124 ]]; then
+            improve_entropy
+            sleep 3
         fi
     fi
 
