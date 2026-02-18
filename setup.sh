@@ -20,6 +20,11 @@ source $PWD/defaults
 GIT_DOTDIR=$PWD/.git
 HOSTNAME=$(hostname)
 
+# Color codes
+GREEN=$'\033[0;32m'
+RED=$'\033[0;31m'
+NC=$'\033[0m'
+
 # Detect if running as root - only use sudo if not root
 if [[ $EUID -eq 0 ]]; then
     SUDO=""
@@ -146,6 +151,75 @@ get_existing_ssh_key() {
             return 0
         fi
     done
+    return 1
+}
+
+# Get full content of existing SSH public key
+get_existing_ssh_key_content() {
+    local key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_ecdsa_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_ecdsa.pub" "~/.ssh/id_rsa.pub")
+    for key_file in "${key_files[@]}"; do
+        local expanded_path=$(eval echo $key_file)
+        if [[ -f "$expanded_path" ]]; then
+            cat "$expanded_path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Delete SSH key from GitHub matching old public key content
+delete_github_ssh_key() {
+    local old_key_content="$1"
+    local token="$2"
+    [[ -z "$old_key_content" || -z "$token" ]] && return 1
+    local key_data=$(echo "$old_key_content" | awk '{print $2}')
+    [[ -z "$key_data" ]] && return 1
+    local response=$(curl -L -s \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer $token" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/user/keys")
+    echo "$response" | grep -q "$key_data" || return 1
+    local key_id=$(echo "$response" | tr '}' '\n' | grep "$key_data" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+    [[ -z "$key_id" ]] && return 1
+    local http_code=$(curl -L -s -o /dev/null -w "%{http_code}" \
+        -X DELETE \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer $token" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/user/keys/$key_id")
+    if [[ "$http_code" == "204" ]]; then
+        echo "Old SSH key removed from GitHub (ID: $key_id)"
+        return 0
+    fi
+    echo "Warning: Could not remove old SSH key from GitHub (HTTP $http_code)"
+    return 1
+}
+
+# Delete GPG key from GitHub matching key fingerprint
+delete_github_gpg_key() {
+    local key_fingerprint="$1"
+    local token="$2"
+    [[ -z "$key_fingerprint" || -z "$token" ]] && return 1
+    local response=$(curl -L -s \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer $token" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/user/gpg_keys")
+    echo "$response" | grep -qi "$key_fingerprint" || return 1
+    local gpg_github_id=$(echo "$response" | tr '}' '\n' | grep -i "$key_fingerprint" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+    [[ -z "$gpg_github_id" ]] && return 1
+    local http_code=$(curl -L -s -o /dev/null -w "%{http_code}" \
+        -X DELETE \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer $token" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/user/gpg_keys/$gpg_github_id")
+    if [[ "$http_code" == "204" ]]; then
+        echo "Old GPG key removed from GitHub (ID: $gpg_github_id)"
+        return 0
+    fi
+    echo "Warning: Could not remove old GPG key from GitHub (HTTP $http_code)"
     return 1
 }
 
@@ -409,14 +483,14 @@ if is_gpg_supported; then
     existing_gpg=$(get_existing_gpg_key)
     if [[ $? -eq 0 ]]; then
         # Existing GPG key found
-        read -p "GPG generate [$existing_gpg]? (Y/[n]): " -n 1 -r gpg_gen_choice
+        read -p "${GREEN}GPG generate [$existing_gpg]? (Y/[n]): ${NC}" -n 1 -r gpg_gen_choice
         echo
         if [[ $gpg_gen_choice =~ ^[Yy]$ ]]; then
             GENERATE_GPG=true
         fi
     else
         # No existing GPG key
-        read -p "GPG generate? ([Y]/n): " -n 1 -r gpg_gen_choice
+        read -p "${GREEN}GPG generate? ([Y]/n): ${NC}" -n 1 -r gpg_gen_choice
         echo
         if [[ -z $gpg_gen_choice || $gpg_gen_choice =~ ^[Yy]$ ]]; then
             GENERATE_GPG=true
@@ -426,7 +500,7 @@ fi
 
 # Step 2: GPG API Upload Prompt (if GPG generation chosen or existing key)
 if [[ $GENERATE_GPG == true ]] || (is_gpg_supported && get_existing_gpg_key >/dev/null 2>&1); then
-    read -p "Upload GPG key to GitHub? (Y/n): " -n 1 -r gpg_upload_choice
+    read -p "${GREEN}Upload GPG key to GitHub? (Y/n): ${NC}" -n 1 -r gpg_upload_choice
     echo
     if [[ -z $gpg_upload_choice || $gpg_upload_choice =~ ^[Yy]$ ]]; then
         UPLOAD_GPG=true
@@ -438,14 +512,14 @@ GENERATE_SSH=false
 existing_ssh=$(get_existing_ssh_key)
 if [[ $? -eq 0 ]]; then
     # Existing SSH key found
-    read -p "SSH generate [$existing_ssh]? (Y/[n]): " -n 1 -r ssh_gen_choice
+    read -p "${GREEN}SSH generate [$existing_ssh]? (Y/[n]): ${NC}" -n 1 -r ssh_gen_choice
     echo
     if [[ $ssh_gen_choice =~ ^[Yy]$ ]]; then
         GENERATE_SSH=true
     fi
 else
     # No existing SSH key
-    read -p "SSH generate? ([Y]/n): " -n 1 -r ssh_gen_choice
+    read -p "${GREEN}SSH generate? ([Y]/n): ${NC}" -n 1 -r ssh_gen_choice
     echo
     if [[ -z $ssh_gen_choice || $ssh_gen_choice =~ ^[Yy]$ ]]; then
         GENERATE_SSH=true
@@ -455,7 +529,7 @@ fi
 # Step 4: SSH API Upload Prompt (if SSH generation chosen or existing key)
 UPLOAD_SSH=false
 if [[ $GENERATE_SSH == true ]] || get_existing_ssh_key >/dev/null 2>&1; then
-    read -p "Upload SSH key to GitHub? (Y/n): " -n 1 -r ssh_upload_choice
+    read -p "${GREEN}Upload SSH key to GitHub? (Y/n): ${NC}" -n 1 -r ssh_upload_choice
     echo
     if [[ -z $ssh_upload_choice || $ssh_upload_choice =~ ^[Yy]$ ]]; then
         UPLOAD_SSH=true
@@ -469,20 +543,32 @@ echo "SSH Generate: $GENERATE_SSH"
 echo "SSH Upload: $UPLOAD_SSH"
 echo
 
+# Capture old GPG key ID before potential regeneration
+OLD_GPG_KEY_ID=""
+if [[ $GENERATE_GPG == true ]]; then
+    OLD_GPG_KEY_ID=$(get_existing_gpg_key) || true
+fi
+
 # Execute GPG Generation
 if [[ $GENERATE_GPG == true ]]; then
     echo "Generating GPG key..."
 
+    # Remove old GPG key from local keyring
+    if [[ -n "$OLD_GPG_KEY_ID" ]]; then
+        echo "Removing old GPG key from local keyring..."
+        gpg --batch --yes --delete-secret-and-public-key "$OLD_GPG_KEY_ID" 2>/dev/null || true
+    fi
+
     # Ask about passphrase protection
     USE_GPG_PASSPHRASE=false
     GPG_PASSPHRASE=""
-    read -p "Protect GPG key with passphrase? (Y/[n]): " -n 1 -r gpg_pass_choice
+    read -p "${GREEN}Protect GPG key with passphrase? (Y/[n]): ${NC}" -n 1 -r gpg_pass_choice
     echo
     if [[ $gpg_pass_choice =~ ^[Yy]$ ]]; then
         USE_GPG_PASSPHRASE=true
-        read -s -p "Enter GPG passphrase: " GPG_PASSPHRASE
+        read -s -p "${RED}Enter GPG passphrase: ${NC}" GPG_PASSPHRASE
         echo
-        read -s -p "Confirm GPG passphrase: " GPG_PASSPHRASE_CONFIRM
+        read -s -p "${RED}Confirm GPG passphrase: ${NC}" GPG_PASSPHRASE_CONFIRM
         echo
         if [[ "$GPG_PASSPHRASE" != "$GPG_PASSPHRASE_CONFIRM" ]]; then
             echo "ERROR: Passphrases don't match"
@@ -506,6 +592,12 @@ fi
 # Execute GPG Upload
 if [[ $UPLOAD_GPG == true ]]; then
     echo "Uploading GPG key to GitHub..."
+
+    # Remove old GPG key from GitHub before uploading new one
+    if [[ $GENERATE_GPG == true && -n "$OLD_GPG_KEY_ID" ]]; then
+        echo "Removing old GPG key from GitHub..."
+        delete_github_gpg_key "$OLD_GPG_KEY_ID" "$GIT_TOKEN"
+    fi
 
     # Extract GPG key ID
     GPG_SIGNINGKEY=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5; exit}')
@@ -541,12 +633,19 @@ if [[ $UPLOAD_GPG == true ]]; then
 EOF
         ))
 
-        if echo "$GPG_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
-            echo "WARNING: GPG key upload failed. Your GitHub token needs the 'write:gpg_keys' scope."
-        elif echo "$GPG_UPLOAD_RESPONSE" | grep -q '"id"'; then
+        if echo "$GPG_UPLOAD_RESPONSE" | grep -q '"id"'; then
             echo "GPG key successfully uploaded to GitHub."
+        elif echo "$GPG_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
+            echo "ERROR: GPG key upload failed. Your GitHub token needs the 'admin:gpg_key' scope."
+        elif echo "$GPG_UPLOAD_RESPONSE" | grep -q "already exists"; then
+            echo "ERROR: GPG key upload failed. This key already exists on GitHub."
         else
-            echo "GPG key upload status unclear."
+            local gpg_error_msg=$(echo "$GPG_UPLOAD_RESPONSE" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"$//')
+            if [[ -n "$gpg_error_msg" ]]; then
+                echo "ERROR: GPG key upload failed: $gpg_error_msg"
+            else
+                echo "ERROR: GPG key upload failed. API response: $GPG_UPLOAD_RESPONSE"
+            fi
         fi
     fi
 fi
@@ -554,7 +653,7 @@ fi
 # Configure Git (optional)
 CONFIGURE_GIT=false
 if [[ $GENERATE_GPG == true && -n "$GPG_SIGNINGKEY" ]]; then
-    read -p "Configure Git with GPG signing? (Y/n): " -n 1 -r git_config_choice
+    read -p "${GREEN}Configure Git with GPG signing? (Y/n): ${NC}" -n 1 -r git_config_choice
     echo
     if [[ -z $git_config_choice || $git_config_choice =~ ^[Yy]$ ]]; then
         CONFIGURE_GIT=true
@@ -594,19 +693,38 @@ if [[ -z $(grep "export HISTSIZE=" ~/.bashrc) ]]; then
   echo "export HISTSIZE=65536" >> ~/.bashrc
 fi
 
+# Ensure ssh-agent starts on login
+if [[ -z $(grep "ssh-agent" ~/.bashrc) ]]; then
+  cat >> ~/.bashrc << 'SSHAGENT'
+
+# Start ssh-agent if not already running
+if [ -z "$SSH_AUTH_SOCK" ]; then
+    eval "$(ssh-agent -s)" >/dev/null 2>&1
+fi
+SSHAGENT
+fi
+
+# Capture old SSH key content before potential regeneration
+OLD_SSH_PUBLICKEY=""
+if [[ $GENERATE_SSH == true ]]; then
+    OLD_SSH_PUBLICKEY=$(get_existing_ssh_key_content) || true
+fi
+
+# Ensure ssh-agent is running
+eval "$(ssh-agent -s)" >/dev/null 2>&1
+
 # Execute SSH Generation
 if [[ $GENERATE_SSH == true ]]; then
     echo "Generating SSH key..."
-    eval "$(ssh-agent -s)"
 
     # Ask about passphrase protection
     SSH_PASSPHRASE=""
-    read -p "Protect SSH key with passphrase? (Y/[n]): " -n 1 -r ssh_pass_choice
+    read -p "${GREEN}Protect SSH key with passphrase? (Y/[n]): ${NC}" -n 1 -r ssh_pass_choice
     echo
     if [[ $ssh_pass_choice =~ ^[Yy]$ ]]; then
-        read -s -p "Enter SSH passphrase: " SSH_PASSPHRASE
+        read -s -p "${RED}Enter SSH passphrase: ${NC}" SSH_PASSPHRASE
         echo
-        read -s -p "Confirm SSH passphrase: " SSH_PASSPHRASE_CONFIRM
+        read -s -p "${RED}Confirm SSH passphrase: ${NC}" SSH_PASSPHRASE_CONFIRM
         echo
         if [[ "$SSH_PASSPHRASE" != "$SSH_PASSPHRASE_CONFIRM" ]]; then
             echo "ERROR: Passphrases don't match"
@@ -681,6 +799,12 @@ fi
 if [[ $UPLOAD_SSH == true ]]; then
     echo "Uploading SSH key to GitHub..."
 
+    # Remove old SSH key from GitHub before uploading new one
+    if [[ $GENERATE_SSH == true && -n "$OLD_SSH_PUBLICKEY" ]]; then
+        echo "Removing old SSH key from GitHub..."
+        delete_github_ssh_key "$OLD_SSH_PUBLICKEY" "$GIT_TOKEN"
+    fi
+
     # Find SSH public key (check same files as detection function)
     key_files=("~/.ssh/id_ed25519_github.pub" "~/.ssh/id_ecdsa_github.pub" "~/.ssh/id_rsa_github.pub" "~/.ssh/id_ed25519.pub" "~/.ssh/id_ecdsa.pub" "~/.ssh/id_rsa.pub")
     SSH_PUBLICKEY=""
@@ -721,18 +845,25 @@ if [[ $UPLOAD_SSH == true ]]; then
 EOF
         ))
 
-        if echo "$SSH_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
-            echo "WARNING: SSH key upload failed. Your GitHub token needs the 'write:public_key' scope."
-        elif echo "$SSH_UPLOAD_RESPONSE" | grep -q '"id"'; then
+        if echo "$SSH_UPLOAD_RESPONSE" | grep -q '"id"'; then
             echo "SSH key successfully uploaded to GitHub."
+        elif echo "$SSH_UPLOAD_RESPONSE" | grep -q "Resource not accessible"; then
+            echo "ERROR: SSH key upload failed. Your GitHub token needs the 'admin:public_key' scope."
+        elif echo "$SSH_UPLOAD_RESPONSE" | grep -q "key is already in use"; then
+            echo "ERROR: SSH key upload failed. This key is already registered on GitHub."
         else
-            echo "SSH key upload status unclear."
+            ssh_error_msg=$(echo "$SSH_UPLOAD_RESPONSE" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"$//')
+            if [[ -n "$ssh_error_msg" ]]; then
+                echo "ERROR: SSH key upload failed: $ssh_error_msg"
+            else
+                echo "ERROR: SSH key upload failed. API response: $SSH_UPLOAD_RESPONSE"
+            fi
         fi
     fi
 fi
 
 # Configure SSH (optional)
-read -p "Configure SSH for GitHub (use ssh.github.com:443)? (Y/[n]): " -n 1 -r ssh_config_choice
+read -p "${GREEN}Configure SSH for GitHub (use ssh.github.com:443)? (Y/[n]): ${NC}" -n 1 -r ssh_config_choice
 echo
 if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
     # Check SSH version for Include directive support (OpenSSH 7.3+)
@@ -742,13 +873,20 @@ if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
 
     touch ~/.ssh/config
 
+    # PubkeyAcceptedAlgorithms was renamed from PubkeyAcceptedKeyTypes in OpenSSH 8.5
+    if [[ $ssh_major -gt 8 ]] || [[ $ssh_major -eq 8 && $ssh_minor -ge 5 ]]; then
+        pubkey_option="PubkeyAcceptedAlgorithms"
+    else
+        pubkey_option="PubkeyAcceptedKeyTypes"
+    fi
+
     # Use Include directive for OpenSSH 7.3+ (major > 7 OR major = 7 AND minor >= 3)
     if [[ $ssh_major -gt 7 ]] || [[ $ssh_major -eq 7 && $ssh_minor -ge 3 ]]; then
         # Modern SSH - use Include directive
         mkdir -p ~/.ssh/config.d
-        if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
-          echo "Include config.d/github" >> ~/.ssh/config;
-          cat << EOF > ~/.ssh/config.d/github
+
+        # Always update the config.d/github file contents
+        cat << EOF > ~/.ssh/config.d/github
 Host *
         AddKeysToAgent yes
         IdentityFile ~/.ssh/id_ed25519_github
@@ -760,11 +898,15 @@ Host github.com
         Port 443
         User git
         UpdateHostKeys yes
-        PubkeyAcceptedAlgorithms +rsa-sha2-512,rsa-sha2-256
+        $pubkey_option +rsa-sha2-512,rsa-sha2-256
 EOF
+
+        # Add Include at the top of config if not already present
+        if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
+          sed -i '1i Include config.d/github' ~/.ssh/config
           echo "SSH config updated for GitHub (using Include)"
         else
-          echo "SSH config already configured for GitHub"
+          echo "SSH config.d/github updated for GitHub"
         fi
     else
         # Legacy SSH (OpenSSH < 7.3) - use minimal compatible config
@@ -799,7 +941,7 @@ Host github.com
         Port 443
         User git
         UpdateHostKeys yes
-        PubkeyAcceptedAlgorithms +rsa-sha2-512,rsa-sha2-256
+        $pubkey_option +rsa-sha2-512,rsa-sha2-256
 EOF
           fi
           echo "SSH config updated for GitHub (legacy mode)"
