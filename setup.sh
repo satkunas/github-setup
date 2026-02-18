@@ -344,7 +344,7 @@ generate_gpg_key() {
         gpgconf --kill gpg-agent 2>/dev/null || true
 
         # Build the gpg command based on passphrase
-        local gpg_cmd="gpg --batch --pinentry-mode loopback"
+        local gpg_cmd="gpg --batch --yes --pinentry-mode loopback"
 
         # Read passphrase from config file if present
         local passphrase_val=""
