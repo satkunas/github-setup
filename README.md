@@ -63,6 +63,11 @@ could not load notifications: could not get notifications: HTTP 403:
 Resource not accessible by personal access token
 ```
 
+Because of this, `setup-gh-client.sh` offers the choice up front: when a usable
+`GIT_TOKEN` is present and the script is running on a terminal, it asks
+`Authenticate in a browser instead of using this token? (Y/[n])` before attempting the
+token login. Answering `n` (the default) uses the token as before.
+
 There is no fine-grained permission that enables this - the endpoints
 ["only support authentication using a personal access token (classic)"](https://docs.github.com/en/rest/activity/notifications)
 and require the `notifications` or `repo` scope. Either ignore it (everything else works),

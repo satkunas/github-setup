@@ -238,15 +238,28 @@ fi
 # Step 3: resolve a usable token
 GIT_TOKEN="${GIT_TOKEN//[$'\r\n\t ']/}"
 
+GH_PREFER_WEB=false
+
 if [[ $GH_AUTHED != true ]]; then
     if gh_token_is_usable "$GIT_TOKEN"; then
         echo "Using GIT_TOKEN from defaults (${GIT_TOKEN:0:7}...${GIT_TOKEN: -4})"
-        read -p "${GREEN}Use a different token? (Y/[n]): ${NC}" -n 1 -r gh_token_change
-        echo
-        if [[ $gh_token_change =~ ^[Yy]$ ]]; then
-            read -s -p "${RED}GitHub PAT (input hidden, leave empty to skip): ${NC}" gh_token_input
+        if [[ -t 0 ]]; then
+            echo "A browser login grants gh's standard scopes (repo, read:org, gist)."
+            echo "A fine-grained PAT cannot reach some endpoints - 'gh status' fails on it."
+            read -p "${GREEN}Authenticate in a browser instead of using this token? (Y/[n]): ${NC}" -n 1 -r gh_prefer_web_choice
             echo
-            [[ -n $gh_token_input ]] && GIT_TOKEN="$gh_token_input"
+            if [[ $gh_prefer_web_choice =~ ^[Yy]$ ]]; then
+                GH_PREFER_WEB=true
+            fi
+        fi
+        if [[ $GH_PREFER_WEB != true ]]; then
+            read -p "${GREEN}Use a different token? (Y/[n]): ${NC}" -n 1 -r gh_token_change
+            echo
+            if [[ $gh_token_change =~ ^[Yy]$ ]]; then
+                read -s -p "${RED}GitHub PAT (input hidden, leave empty to skip): ${NC}" gh_token_input
+                echo
+                [[ -n $gh_token_input ]] && GIT_TOKEN="$gh_token_input"
+            fi
         fi
     else
         echo "No usable GIT_TOKEN found in defaults (value is the placeholder '${GIT_TOKEN}')."
@@ -265,7 +278,7 @@ GH_LOGIN_OUTPUT=""
 
 if [[ $GH_AUTHED == true ]]; then
     GH_AUTH_OK=true
-elif gh_token_is_usable "$GIT_TOKEN"; then
+elif [[ $GH_PREFER_WEB != true ]] && gh_token_is_usable "$GIT_TOKEN"; then
     echo "Authenticating gh with the supplied token..."
     login_args=(--hostname github.com --with-token --git-protocol ssh)
     gh_supports_flag "--skip-ssh-key" && login_args+=(--skip-ssh-key)
@@ -308,8 +321,11 @@ if [[ $GH_AUTH_OK != true ]]; then
     if [[ ! -t 0 ]]; then
         echo "ERROR: browser login requires an interactive terminal. Re-run from a TTY."
     else
-        read -p "${GREEN}Authenticate gh in a browser instead (device flow)? (Y/[n]): ${NC}" -n 1 -r gh_web_choice
-        echo
+        gh_web_choice="y"
+        if [[ $GH_PREFER_WEB != true ]]; then
+            read -p "${GREEN}Authenticate gh in a browser instead (device flow)? (Y/[n]): ${NC}" -n 1 -r gh_web_choice
+            echo
+        fi
         if [[ $gh_web_choice =~ ^[Yy]$ ]]; then
             echo "gh will print a one-time code and a URL (https://github.com/login/device)."
             echo "Open it on any machine with a browser and enter the code."
