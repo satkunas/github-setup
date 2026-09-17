@@ -871,7 +871,10 @@ if [[ $ssh_config_choice =~ ^[Yy]$ ]]; then
     ssh_major=$(echo $ssh_version | cut -d. -f1)
     ssh_minor=$(echo $ssh_version | cut -d. -f2)
 
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
     touch ~/.ssh/config
+    chmod 600 ~/.ssh/config
 
     # PubkeyAcceptedAlgorithms was renamed from PubkeyAcceptedKeyTypes in OpenSSH 8.5
     if [[ $ssh_major -gt 8 ]] || [[ $ssh_major -eq 8 && $ssh_minor -ge 5 ]]; then
@@ -901,9 +904,16 @@ Host github.com
         $pubkey_option +rsa-sha2-512,rsa-sha2-256
 EOF
 
-        # Add Include at the top of config if not already present
-        if [[ -z $(grep "Include config.d/github" ~/.ssh/config) ]]; then
-          sed -i '1i Include config.d/github' ~/.ssh/config
+        chmod 600 ~/.ssh/config.d/github
+
+        # Add Include at the top of config if not already present.
+        # Note: `sed -i '1i ...'` is a no-op on an empty file (sed runs the
+        # command per input line, and a freshly touched config has none), so
+        # prepend by rewriting the file instead.
+        if ! grep -qE '^[[:space:]]*Include[[:space:]]+config\.d/github[[:space:]]*$' ~/.ssh/config; then
+          { printf 'Include config.d/github\n\n'; cat ~/.ssh/config; } > ~/.ssh/config.tmp
+          mv ~/.ssh/config.tmp ~/.ssh/config
+          chmod 600 ~/.ssh/config
           echo "SSH config updated for GitHub (using Include)"
         else
           echo "SSH config.d/github updated for GitHub"
