@@ -51,6 +51,31 @@ only chooses the protocol for remotes `gh` creates - it is not an authentication
 and GPG keys have no authentication role at all. The script passes `--skip-ssh-key`
 because `setup.sh` already generates *and* uploads the SSH key.
 
+### Fine-grained PAT limits
+
+A fine-grained PAT authenticates `gh` and works for most commands, but some GitHub REST
+endpoints accept **classic** tokens only. The notifications API is one, so `gh status`
+fails even though the login itself is fine:
+
+```bash
+gh status
+could not load notifications: could not get notifications: HTTP 403:
+Resource not accessible by personal access token
+```
+
+There is no fine-grained permission that enables this - the endpoints
+["only support authentication using a personal access token (classic)"](https://docs.github.com/en/rest/activity/notifications)
+and require the `notifications` or `repo` scope. Either ignore it (everything else works),
+or re-authenticate with the browser flow, which grants `gh`'s standard scopes
+(`repo`, `read:org`, `gist`):
+
+```bash
+gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key --web
+```
+
+That replaces the stored token for `gh` only - `defaults` and the GPG/SSH key uploads,
+which do need the fine-grained permissions, are unaffected.
+
 **Authentication persists across logins with no shell hook.** `gh` stores credentials in
 the system keyring when one is available, otherwise in `~/.config/gh/hosts.yml` (mode 600).
 Nothing is appended to `~/.bashrc` and `GH_TOKEN` does not need to be exported. If
