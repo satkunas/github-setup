@@ -46,11 +46,11 @@ fi
 echo "Using GIT directory $GIT_DOTDIR"
 git config core.editor "vi"
 
-read -e -p "GIT email: " -i $GIT_EMAIL git_email_input
+read -e -p "GIT email: " -i "$GIT_EMAIL" git_email_input
 GIT_EMAIL=${git_email_input:-$GIT_EMAIL}
-read -e -p "GIT name: " -i $GIT_NAME git_name_input
+read -e -p "GIT name: " -i "$GIT_NAME" git_name_input
 GIT_NAME=${git_name_input:-$GIT_NAME}
-read -e -p "GIT fine-grained PAT: " -i $GIT_TOKEN git_token_input
+read -e -p "GIT fine-grained PAT: " -i "$GIT_TOKEN" git_token_input
 GIT_TOKEN=${git_token_input:-$GIT_TOKEN}
 
 # Configure basic Git user info
@@ -89,6 +89,41 @@ else
     install_package "gpg"
 fi
 install_package "git"
+
+# Git resolves credential.helper=<name> to git-credential-<name>, searching
+# `git --exec-path` first and then $PATH - checking only $PATH is not enough.
+git_credential_helper_exists() {
+    local name="$1"
+    [[ -x "$(git --exec-path 2>/dev/null)/git-credential-$name" ]] && return 0
+    command -v "git-credential-$name" >/dev/null 2>&1
+}
+
+# Remove a globally configured credential helper that cannot possibly run.
+# Earlier versions of this script set credential.helper=netrc, but
+# git-credential-netrc is not packaged as an executable on Debian/Ubuntu, so
+# every authenticated git operation printed an error. Only the exact broken
+# value is removed - a deliberately configured helper is left untouched.
+remove_broken_credential_helper() {
+    local name="$1"
+    local rc
+
+    git_credential_helper_exists "$name" && return 0
+
+    if ! git config --global --get-all credential.helper 2>/dev/null | grep -qx "$name"; then
+        return 0
+    fi
+
+    git config --global --unset-all credential.helper "^${name}\$"
+    rc=$?
+    if [[ $rc -eq 0 || $rc -eq 5 ]]; then
+        echo "Removed broken global credential.helper=$name (git-credential-$name is not installed)"
+    else
+        echo "ERROR: could not remove global credential.helper=$name (git config exit $rc)"
+    fi
+}
+
+# Heal hosts where an earlier run set the unusable netrc credential helper
+remove_broken_credential_helper "netrc"
 
 # Basic entropy improvement
 improve_entropy() {
@@ -607,9 +642,6 @@ if [[ $UPLOAD_GPG == true ]]; then
     else
         echo "Found GPG key: $GPG_SIGNINGKEY"
 
-        # Configure credential helper for GPG operations
-        git config --global credential.helper netrc
-
         # Prompt for custom name
         default_name="GPG Key: $(get_hostname_identifier)"
         read -e -p "GPG key name: " -i "$default_name" gpg_key_name_input
@@ -822,9 +854,6 @@ if [[ $UPLOAD_SSH == true ]]; then
     fi
 
     if [[ -n "$SSH_PUBLICKEY" ]]; then
-        # Configure credential helper for SSH operations
-        git config --global credential.helper netrc
-
         # Prompt for custom name
         default_name="SSH Key: $(get_hostname_identifier)"
         read -e -p "SSH key name: " -i "$default_name" ssh_key_name_input
@@ -958,6 +987,19 @@ EOF
         else
           echo "SSH config already configured for GitHub"
         fi
+    fi
+fi
+
+# Configure GitHub CLI (optional)
+read -p "${GREEN}Install and authenticate the GitHub CLI (gh)? (Y/[n]): ${NC}" -n 1 -r gh_client_choice
+echo
+if [[ $gh_client_choice =~ ^[Yy]$ ]]; then
+    GH_CLIENT_SCRIPT="$(dirname "$(realpath "$0")")/setup-gh-client.sh"
+    if [[ -f $GH_CLIENT_SCRIPT ]]; then
+        # Pass the token via the environment, never argv (argv is world-readable)
+        GIT_TOKEN="$GIT_TOKEN" bash "$GH_CLIENT_SCRIPT"
+    else
+        echo "ERROR: setup-gh-client.sh not found at $GH_CLIENT_SCRIPT"
     fi
 fi
 
